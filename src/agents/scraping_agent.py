@@ -17,8 +17,9 @@ from src.state.state import (
     BenchmarkingState,
     WorkflowStatus,
     AgentType,
+    ScrapingMode,
 )
-from src.tools.scraper import EPowertrainExtractor, scrape_oem_urls
+from src.tools.scraper import EPowertrainExtractor
 
 
 # =====================================================================
@@ -57,8 +58,22 @@ def scraping_node(state: BenchmarkingState) -> Dict[str, Any]:
         }
 
     try:
-        # Use the scraper tool
-        scraping_results = scrape_oem_urls(urls)
+        # Determine scraping mode from state
+        mode = state.get("scraping_mode", ScrapingMode.PERPLEXITY)
+
+        # Map mode to use_intelligent_mode flag
+        if mode == ScrapingMode.INTELLIGENT:
+            use_intelligent = True
+        elif mode == ScrapingMode.PERPLEXITY:
+            use_intelligent = False
+        else:  # AUTO - default to perplexity for now
+            use_intelligent = False
+
+        print(f"\n[Scraping Agent] Mode: {mode.value} (intelligent={use_intelligent})")
+
+        # Create extractor with appropriate mode
+        extractor = EPowertrainExtractor(use_intelligent_mode=use_intelligent)
+        scraping_results = extractor.process_urls(urls)
 
         # Aggregate all vehicles
         all_vehicles = []

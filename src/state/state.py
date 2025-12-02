@@ -60,32 +60,35 @@ class VehicleSpecifications(TypedDict, total=False):
     category: Optional[str]
     powertrain_type: Optional[str]
     source_url: str
-    
+
     # Battery
     battery_capacity_kwh: Optional[float]
+    battery_capacity_min_kwh: Optional[float]  # NEW: Min for ranges like "240-560 kWh"
     battery_voltage_v: Optional[float]
-    battery_chemistry: Optional[str]
-    
+    battery_chemistry: Optional[str]  # e.g., "NMC", "LFP"
+
     # Motor
     motor_power_kw: Optional[float]
     motor_torque_nm: Optional[float]
-    
+
     # Range
     range_km: Optional[float]
+    range_min_km: Optional[float]  # NEW: Min for ranges like "500-750 km"
     energy_consumption_kwh_per_100km: Optional[float]
-    
+
     # Charging
     dc_charging_kw: Optional[float]
     charging_time_minutes: Optional[Dict[str, float]]
-    
+
     # Vehicle
     gvw_kg: Optional[float]
     payload_capacity_kg: Optional[float]
-    
+    available_configurations: Optional[List[str]]  # NEW: e.g., ["4x2", "6x2"]
+
     # FLEXIBLE fields
     additional_specs: Optional[Dict[str, Any]]
     raw_table_data: Optional[str]
-    
+
     # Metadata
     extraction_timestamp: str
     data_completeness_score: Optional[float]
@@ -160,27 +163,33 @@ class OEMProfile(TypedDict, total=False):
 # SCRAPING & VALIDATION RESULTS
 # =====================================================================
 
-class ScrapingResult(TypedDict):
+class ScrapingResult(TypedDict, total=False):
     """Results from scraping agent"""
     oem_name: str
     oem_url: str
     vehicles: List[VehicleSpecifications]
     total_vehicles_found: int
     extraction_timestamp: str
-    
+
     # Source validation
     official_citations: List[str]
     third_party_citations: List[str]
     source_compliance_score: float
-    
+
     # Raw content (markdown from Perplexity)
     raw_content: str
-    
+
+    # NEW: Intelligent navigation fields
+    pages_crawled: int  # Number of pages crawled
+    spec_urls_found: List[str]  # URLs that were identified as spec pages
+    extraction_details: List[Dict[str, Any]]  # Details per page
+
     # Metadata
+    fetched_content_length: int
     tokens_used: int
     model_used: str
     extraction_duration_seconds: float
-    
+
     # Errors
     errors: List[str]
     warnings: List[str]
@@ -227,18 +236,26 @@ class PresentationResult(TypedDict, total=False):
 # MAIN WORKFLOW STATE
 # =====================================================================
 
+class ScrapingMode(str, Enum):
+    """Scraping mode selection"""
+    INTELLIGENT = "intelligent"  # Multi-page LLM-guided navigation
+    PERPLEXITY = "perplexity"    # Single-page Perplexity extraction (improved)
+    AUTO = "auto"                # Auto-select based on URL
+
+
 class BenchmarkingState(TypedDict, total=False):
     """Complete workflow state"""
 
     # Conversation
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    
+
     # Workflow control
     workflow_status: WorkflowStatus
     current_agent: AgentType
     retry_count: int
     total_retries_remaining: int
-    
+    scraping_mode: ScrapingMode  # NEW: Mode selection for scraper
+
     # Input
     oem_urls: List[str]
     
@@ -272,7 +289,10 @@ class BenchmarkingState(TypedDict, total=False):
 # HELPER FUNCTIONS
 # =====================================================================
 
-def initialize_state(oem_urls: List[str]) -> BenchmarkingState:
+def initialize_state(
+    oem_urls: List[str],
+    scraping_mode: ScrapingMode = ScrapingMode.PERPLEXITY
+) -> BenchmarkingState:
     """Create initial state for new workflow"""
     try:
         from src.config.settings import settings
@@ -281,17 +301,18 @@ def initialize_state(oem_urls: List[str]) -> BenchmarkingState:
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
         from src.config.settings import settings
-    
+
     return BenchmarkingState(
         messages=[],
         workflow_status=WorkflowStatus.INITIALIZED,
         current_agent=AgentType.SCRAPER,
         retry_count=0,
         total_retries_remaining=settings.max_retry_attempts,
+        scraping_mode=scraping_mode,  # NEW: Mode selection
         oem_urls=oem_urls,
         scraping_results=None,
         all_vehicles=None,
-        oem_profiles=None,  # NEW: For IAA template
+        oem_profiles=None,
         quality_validation=None,
         presentation_result=None,
         total_tokens_used=0,

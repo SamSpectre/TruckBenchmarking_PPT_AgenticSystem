@@ -92,12 +92,30 @@ class Settings(BaseSettings):
         default=8000,
         description="Max tokens for scraping"
     )
-    
+
     scraping_temperature: float = Field(
         default=0.1,
         ge=0.0,
         le=2.0,
         description="Temperature for scraping (lower = more deterministic)"
+    )
+
+    # INTELLIGENT NAVIGATION SETTINGS
+    enable_intelligent_navigation: bool = Field(
+        default=True,
+        description="Use LLM-guided navigation to find spec pages (vs direct URL scraping)"
+    )
+
+    max_pages_per_oem: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Maximum pages to crawl per OEM website"
+    )
+
+    llm_extraction_model: str = Field(
+        default="openai/gpt-4o-mini",
+        description="LLM model for extraction (via LiteLLM format)"
     )
     
     # COST TRACKING

@@ -32,6 +32,7 @@ from src.state.state import (
     BenchmarkingState,
     WorkflowStatus,
     AgentType,
+    ScrapingMode,
     initialize_state,
     get_state_summary,
 )
@@ -187,7 +188,8 @@ def create_workflow(checkpointer: Optional[MemorySaver] = None) -> StateGraph:
 def run_benchmark(
     urls: List[str],
     thread_id: str = "default",
-    verbose: bool = True
+    verbose: bool = True,
+    mode: ScrapingMode = ScrapingMode.PERPLEXITY
 ) -> BenchmarkingState:
     """
     Run the complete benchmarking workflow.
@@ -196,6 +198,7 @@ def run_benchmark(
         urls: List of OEM website URLs to scrape
         thread_id: Thread ID for checkpointing
         verbose: Print progress updates
+        mode: Scraping mode (intelligent, perplexity, or auto)
 
     Returns:
         Final BenchmarkingState after workflow completion
@@ -204,13 +207,14 @@ def run_benchmark(
         print("=" * 60)
         print("E-POWERTRAIN BENCHMARKING SYSTEM")
         print("=" * 60)
+        print(f"Mode: {mode.value}")
         print(f"URLs to process: {len(urls)}")
         for url in urls:
             print(f"  - {url}")
         print()
 
-    # Initialize state
-    initial_state = initialize_state(urls)
+    # Initialize state with mode
+    initial_state = initialize_state(urls, scraping_mode=mode)
 
     # Create workflow
     workflow = create_workflow()
@@ -231,7 +235,8 @@ def run_benchmark(
 
 def stream_benchmark(
     urls: List[str],
-    thread_id: str = "default"
+    thread_id: str = "default",
+    mode: ScrapingMode = ScrapingMode.PERPLEXITY
 ):
     """
     Stream workflow execution, yielding state after each step.
@@ -241,11 +246,12 @@ def stream_benchmark(
     Args:
         urls: List of OEM website URLs
         thread_id: Thread ID for checkpointing
+        mode: Scraping mode (intelligent, perplexity, or auto)
 
     Yields:
         Dict with node name and updated state after each step
     """
-    initial_state = initialize_state(urls)
+    initial_state = initialize_state(urls, scraping_mode=mode)
     workflow = create_workflow()
     config = {"configurable": {"thread_id": thread_id}}
 
@@ -326,8 +332,23 @@ Examples:
         action="store_true",
         help="Suppress verbose output"
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["intelligent", "perplexity", "auto"],
+        default="perplexity",
+        help="Scraping mode: intelligent (multi-page OpenAI), perplexity (single-page), auto"
+    )
 
     args = parser.parse_args()
+
+    # Parse mode
+    mode_map = {
+        "intelligent": ScrapingMode.INTELLIGENT,
+        "perplexity": ScrapingMode.PERPLEXITY,
+        "auto": ScrapingMode.AUTO,
+    }
+    scraping_mode = mode_map.get(args.mode, ScrapingMode.PERPLEXITY)
 
     # Print graph visualization
     if args.graph:
@@ -366,14 +387,14 @@ Examples:
     # Run workflow
     try:
         if args.stream:
-            print("Streaming workflow execution...")
+            print(f"Streaming workflow execution (mode: {args.mode})...")
             print("=" * 60)
-            for step in stream_benchmark(urls):
+            for step in stream_benchmark(urls, mode=scraping_mode):
                 pass  # Progress printed in stream_benchmark
             print("=" * 60)
             print("Workflow complete!")
         else:
-            result = run_benchmark(urls, verbose=not args.quiet)
+            result = run_benchmark(urls, verbose=not args.quiet, mode=scraping_mode)
 
             # Print final results
             if result.get("workflow_status") == WorkflowStatus.COMPLETED:

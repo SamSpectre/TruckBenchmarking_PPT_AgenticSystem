@@ -2,15 +2,28 @@
   "template_name": "IAA_Template",
   "template_hash": "545a77d553ef",
   "description": "IAA Commercial Vehicle Show benchmarking template",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "created_at": "2025-12-03T00:00:00",
   "created_by": "manual_conversion",
-  "notes": "Converted from hardcoded SHAPE_IDS and PRODUCT_TABLE_ROWS in ppt_generator.py",
+  "notes": "Converted from hardcoded SHAPE_IDS and PRODUCT_TABLE_ROWS in ppt_generator.py. Updated to v2.0.0 with multi-slide support.",
+
+  "supports_multi_slide": true,
+
+  "pagination_rules": {
+    "products": {
+      "items_per_slide": 2,
+      "overflow_behavior": "duplicate_slide",
+      "source_slide_index": 0,
+      "shape_id": 8,
+      "description": "When more than 2 products exist, duplicate the slide for additional products"
+    }
+  },
 
   "shape_mappings": [
     {
       "shape_id": 2,
       "shape_name": "Title 1",
+      "slide_index": 0,
       "type": "text",
       "data_field": "oem_info.oem_name",
       "format": "{value}",
@@ -20,6 +33,7 @@
     {
       "shape_id": 7,
       "shape_name": "Company Info Table",
+      "slide_index": 0,
       "type": "table",
       "description": "6x2 table with company information",
       "row_mappings": [
@@ -33,8 +47,10 @@
     {
       "shape_id": 8,
       "shape_name": "Products Table",
+      "slide_index": 0,
       "type": "table",
-      "description": "14x3 table with product specifications (up to 2 products)",
+      "repeatable_for": "products",
+      "description": "14x3 table with product specifications (up to 2 products per slide)",
       "row_mappings": [
         {"row_index": 0, "data_field": "products[].name", "format": "{value}", "default": ""},
         {"row_index": 1, "data_field": "products[].wheel_formula", "format": "{value}", "default": "N/A"},
@@ -57,6 +73,7 @@
     {
       "shape_id": 25,
       "shape_name": "Expected Highlights",
+      "slide_index": 0,
       "type": "bullet_list",
       "data_field": "computed_fields.expected_highlights",
       "max_items": 4,
@@ -66,6 +83,7 @@
     {
       "shape_id": 27,
       "shape_name": "Assessment",
+      "slide_index": 0,
       "type": "bullet_list",
       "data_field": "computed_fields.assessment",
       "max_items": 3,
@@ -75,6 +93,7 @@
     {
       "shape_id": 26,
       "shape_name": "Technologies",
+      "slide_index": 0,
       "type": "bullet_list",
       "data_field": "computed_fields.technologies",
       "max_items": 5,

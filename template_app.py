@@ -119,17 +119,32 @@ def generate_mapping(analysis_json: str, use_llm: bool):
             mapping = agent.generate_mapping_manual(analysis)
             method = "Rule-based"
 
+        # Multi-slide info
+        multi_slide = mapping.get('supports_multi_slide', False)
+        pagination_rules = mapping.get('pagination_rules', {})
+        version = mapping.get('version', '1.0.0')
+
         summary = f"""## Generated Mapping ({method})
 
 **Template**: {mapping.get('template_name', 'unknown')}
+**Version**: {version}
+**Multi-Slide Support**: {'Yes' if multi_slide else 'No'}
 **Shape Mappings**: {len(mapping.get('shape_mappings', []))}
 **Unmapped Shapes**: {len(mapping.get('unmapped_shapes', []))}
-
-### Mappings
 """
+        if pagination_rules:
+            summary += "\n### Pagination Rules\n"
+            for field, rules in pagination_rules.items():
+                items_per = rules.get('items_per_slide', 2)
+                summary += f"- **{field}**: {items_per} items/slide (overflow: {rules.get('overflow_behavior', 'N/A')})\n"
+
+        summary += "\n### Mappings\n"
         for m in mapping.get('shape_mappings', [])[:10]:
             field = m.get('data_field', 'N/A')
-            summary += f"- Shape {m['shape_id']} ({m['type']}): `{field}`\n"
+            slide_idx = m.get('slide_index', 0)
+            repeatable = m.get('repeatable_for', '')
+            rep_indicator = f" [repeatable: {repeatable}]" if repeatable else ""
+            summary += f"- Shape {m['shape_id']} (slide {slide_idx}, {m['type']}): `{field}`{rep_indicator}\n"
 
         return summary, json.dumps(mapping, indent=2)
 
@@ -171,17 +186,28 @@ def load_existing_mapping(template_name: str):
     if mapping is None:
         return f"Template '{template_name}' not found", None
 
+    # Multi-slide info
+    multi_slide = mapping.get('supports_multi_slide', False)
+    pagination_rules = mapping.get('pagination_rules', {})
+
     summary = f"""## Loaded: {template_name}
 
 **Hash**: {mapping.get('template_hash', 'N/A')}
-**Mappings**: {len(mapping.get('shape_mappings', []))}
 **Version**: {mapping.get('version', '1.0.0')}
+**Multi-Slide Support**: {'Yes' if multi_slide else 'No'}
+**Mappings**: {len(mapping.get('shape_mappings', []))}
 """
+    if pagination_rules:
+        summary += "\n### Pagination Rules\n"
+        for field, rules in pagination_rules.items():
+            items_per = rules.get('items_per_slide', 2)
+            summary += f"- **{field}**: {items_per} items/slide\n"
+
     return summary, json.dumps(mapping, indent=2)
 
 
 def test_mapping(mapping_json: str, template_path: str):
-    """Test a mapping by generating a sample presentation."""
+    """Test a mapping by generating a sample presentation with multi-slide support."""
     if not mapping_json:
         return "No mapping to test", None
 
@@ -192,10 +218,10 @@ def test_mapping(mapping_json: str, template_path: str):
     try:
         mapping = json.loads(mapping_json)
 
-        # Create test data
+        # Create test data with 5 products to test multi-slide overflow
         test_data = {
             "oem_info": {
-                "oem_name": "Test OEM (Template Test)",
+                "oem_name": "Test OEM (Multi-Slide Test)",
                 "country": "Germany",
                 "website": "www.test-oem.com",
                 "category": "OEM - Commercial Trucks"
@@ -216,21 +242,88 @@ def test_mapping(mapping_json: str, template_path: str):
                     "sop": "2025",
                     "markets": "EU",
                     "application": "Heavy-duty Truck"
+                },
+                {
+                    "name": "Test Vehicle X2",
+                    "wheel_formula": "6x4",
+                    "wheelbase": "4,800 mm",
+                    "gvw_gcw": "44,000 kg GVW",
+                    "range": "500 km",
+                    "battery": "600 kWh",
+                    "fuel_cell": "N/A",
+                    "h2_tank": "N/A",
+                    "charging": "400 kW DC",
+                    "performance": "400 kW",
+                    "powertrain": "BEV",
+                    "sop": "2025",
+                    "markets": "EU, NA",
+                    "application": "Heavy-duty Truck"
+                },
+                {
+                    "name": "Test Vehicle X3 Long Range",
+                    "wheel_formula": "6x2",
+                    "wheelbase": "5,000 mm",
+                    "gvw_gcw": "40,000 kg GVW",
+                    "range": "700 km",
+                    "battery": "800 kWh",
+                    "fuel_cell": "N/A",
+                    "h2_tank": "N/A",
+                    "charging": "450 kW DC",
+                    "performance": "450 kW",
+                    "powertrain": "BEV",
+                    "sop": "2026",
+                    "markets": "Global",
+                    "application": "Heavy-duty Truck"
+                },
+                {
+                    "name": "Test Bus City 12m",
+                    "wheel_formula": "4x2",
+                    "wheelbase": "5,900 mm",
+                    "gvw_gcw": "19,000 kg GVW",
+                    "range": "300 km",
+                    "battery": "350 kWh",
+                    "fuel_cell": "N/A",
+                    "h2_tank": "N/A",
+                    "charging": "150 kW DC",
+                    "performance": "250 kW",
+                    "powertrain": "BEV",
+                    "sop": "2024",
+                    "markets": "EU",
+                    "application": "City Bus"
+                },
+                {
+                    "name": "Test Bus Coach 13m",
+                    "wheel_formula": "6x2",
+                    "wheelbase": "6,500 mm",
+                    "gvw_gcw": "24,000 kg GVW",
+                    "range": "400 km",
+                    "battery": "450 kWh",
+                    "fuel_cell": "N/A",
+                    "h2_tank": "N/A",
+                    "charging": "250 kW DC",
+                    "performance": "300 kW",
+                    "powertrain": "BEV",
+                    "sop": "2025",
+                    "markets": "EU, APAC",
+                    "application": "Coach"
                 }
             ],
             "computed_fields": {
                 "expected_highlights": [
-                    "Test highlight 1",
-                    "Test highlight 2",
-                    "Battery capacity: 500 kWh"
+                    "5 vehicle portfolio test",
+                    "Multi-slide overflow test",
+                    "Battery capacity: up to 800 kWh",
+                    "Range: up to 700 km"
                 ],
                 "assessment": [
-                    "Template test successful",
-                    "All shapes populated"
+                    "Multi-slide template test",
+                    "All shapes populated",
+                    "Overflow slides generated"
                 ],
                 "technologies": [
                     "Li-ion Battery",
-                    "DC Fast Charging"
+                    "DC Fast Charging",
+                    "High-Power Charging (450kW)"
                 ]
             }
         }
@@ -244,7 +337,8 @@ def test_mapping(mapping_json: str, template_path: str):
         result = generator.generate(template_path, test_data, output_path)
 
         if result["success"]:
-            return f"Test successful! Output: {result['presentation_path']}\nShapes populated: {result['shapes_populated']}", output_path
+            slides_info = f"Slides: {result.get('slides_created', 1)} (overflow: {result.get('overflow_slides', 0)})"
+            return f"Test successful!\nOutput: {result['presentation_path']}\n{slides_info}\nShapes populated: {result['shapes_populated']}", output_path
         else:
             return f"Test failed: {result.get('error', 'Unknown error')}", None
 

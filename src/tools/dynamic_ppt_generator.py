@@ -3,23 +3,33 @@ Dynamic PowerPoint Generator for Plug-and-Play Template System
 
 Generates presentations using JSON mapping configurations.
 Supports any template with a valid mapping config.
+Supports multi-slide templates with overflow/pagination for arrays.
 
 This is a standalone module - does NOT modify existing ppt_generator.py
+
+Version History:
+- 1.0.0: Initial release with single-slide support
+- 2.0.0: Added multi-slide support with full slide duplication
 """
 
 from pptx import Presentation
 from pptx.util import Pt
-from typing import Dict, List, Any, Optional, Union
+from pptx.oxml import parse_xml
+from pptx.oxml.ns import nsmap
+from typing import Dict, List, Any, Optional, Union, Tuple
 from datetime import datetime
 from pathlib import Path
+from copy import deepcopy
 import json
 import re
 import time
+import math
 
 
 class DynamicPPTGenerator:
     """
     Generates PowerPoint presentations using JSON mapping configurations.
+    Supports multi-slide templates with overflow/pagination for arrays.
 
     Usage:
         generator = DynamicPPTGenerator(mapping_config)
@@ -40,6 +50,8 @@ class DynamicPPTGenerator:
             self.mapping = mapping_config
 
         self.template_name = self.mapping.get("template_name", "unknown")
+        self.supports_multi_slide = self.mapping.get("supports_multi_slide", False)
+        self.pagination_rules = self.mapping.get("pagination_rules", {})
 
     def generate(
         self,
@@ -49,6 +61,7 @@ class DynamicPPTGenerator:
     ) -> Dict[str, Any]:
         """
         Generate a presentation from template using data.
+        Supports multi-slide templates with overflow/pagination.
 
         Args:
             template_path: Path to .pptx template file
@@ -61,40 +74,82 @@ class DynamicPPTGenerator:
         start_time = time.time()
         errors = []
         shapes_populated = 0
+        slides_created = 0
 
         try:
             prs = Presentation(template_path)
-            slide = prs.slides[0]  # Assume single slide template for now
 
-            # Process each shape mapping
-            for shape_mapping in self.mapping.get("shape_mappings", []):
-                try:
-                    shape_id = shape_mapping["shape_id"]
-                    shape = self._get_shape_by_id(slide, shape_id)
+            # Calculate overflow slides needed
+            overflow_slides_info = self._calculate_overflow_slides(data)
 
-                    if shape is None:
-                        errors.append(f"Shape {shape_id} not found in template")
-                        continue
+            # Create overflow slides if needed
+            for overflow_info in overflow_slides_info:
+                source_slide_idx = overflow_info['source_slide_index']
+                num_overflow = overflow_info['overflow_count']
+                for _ in range(num_overflow):
+                    self._duplicate_slide(prs, source_slide_idx)
+                    slides_created += 1
 
-                    mapping_type = shape_mapping.get("type", "text")
+            # Get slide mappings grouped by slide_index
+            slide_mappings = self._group_mappings_by_slide()
 
-                    if mapping_type == "text":
-                        self._populate_text(shape, shape_mapping, data)
-                        shapes_populated += 1
+            # Process each slide
+            total_slides = len(prs.slides)
+            for slide_idx in range(total_slides):
+                if slide_idx >= len(prs.slides):
+                    break
 
-                    elif mapping_type == "table":
-                        if shape.has_table:
-                            self._populate_table(shape.table, shape_mapping, data)
+                slide = prs.slides[slide_idx]
+
+                # Get mappings for this slide (use slide 0 mappings for overflow slides)
+                effective_slide_idx = 0 if slide_idx > 0 else slide_idx
+                mappings = slide_mappings.get(effective_slide_idx, [])
+
+                # Calculate product offset for this slide
+                products = data.get("products", [])
+                items_per_slide = self.pagination_rules.get("products", {}).get("items_per_slide", 2)
+                product_offset = slide_idx * items_per_slide
+
+                for shape_mapping in mappings:
+                    try:
+                        shape_id = shape_mapping["shape_id"]
+                        shape = self._get_shape_by_id(slide, shape_id)
+
+                        if shape is None:
+                            if slide_idx == 0:  # Only report errors for first slide
+                                errors.append(f"Shape {shape_id} not found in template")
+                            continue
+
+                        mapping_type = shape_mapping.get("type", "text")
+                        is_repeatable = shape_mapping.get("repeatable_for") == "products"
+
+                        if mapping_type == "text":
+                            self._populate_text(shape, shape_mapping, data)
                             shapes_populated += 1
-                        else:
-                            errors.append(f"Shape {shape_id} is not a table")
 
-                    elif mapping_type == "bullet_list":
-                        self._populate_bullet_list(shape, shape_mapping, data)
-                        shapes_populated += 1
+                        elif mapping_type == "table":
+                            if shape.has_table:
+                                if is_repeatable:
+                                    # Products table - use offset for this slide
+                                    self._populate_table(
+                                        shape.table,
+                                        shape_mapping,
+                                        data,
+                                        product_offset=product_offset
+                                    )
+                                else:
+                                    self._populate_table(shape.table, shape_mapping, data)
+                                shapes_populated += 1
+                            else:
+                                if slide_idx == 0:
+                                    errors.append(f"Shape {shape_id} is not a table")
 
-                except Exception as e:
-                    errors.append(f"Error populating shape {shape_mapping.get('shape_id')}: {str(e)}")
+                        elif mapping_type == "bullet_list":
+                            self._populate_bullet_list(shape, shape_mapping, data)
+                            shapes_populated += 1
+
+                    except Exception as e:
+                        errors.append(f"Error populating shape {shape_mapping.get('shape_id')} on slide {slide_idx}: {str(e)}")
 
             # Save presentation
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +163,8 @@ class DynamicPPTGenerator:
                 "template_used": self.template_name,
                 "shapes_populated": shapes_populated,
                 "total_mappings": len(self.mapping.get("shape_mappings", [])),
+                "slides_created": slides_created + 1,  # +1 for original slide
+                "overflow_slides": slides_created,
                 "errors": errors,
                 "generation_timestamp": datetime.now().isoformat(),
                 "generation_duration_seconds": round(duration, 2)
@@ -120,6 +177,90 @@ class DynamicPPTGenerator:
                 "errors": errors,
                 "generation_timestamp": datetime.now().isoformat()
             }
+
+    def _calculate_overflow_slides(self, data: Dict) -> List[Dict]:
+        """
+        Calculate how many overflow slides are needed based on data.
+
+        Returns:
+            List of dicts with source_slide_index and overflow_count
+        """
+        overflow_info = []
+
+        if not self.supports_multi_slide:
+            return overflow_info
+
+        for field_name, rules in self.pagination_rules.items():
+            items = data.get(field_name, [])
+            if not isinstance(items, list):
+                continue
+
+            items_per_slide = rules.get("items_per_slide", 2)
+            source_slide_idx = rules.get("source_slide_index", 0)
+
+            total_items = len(items)
+            slides_needed = math.ceil(total_items / items_per_slide) if total_items > 0 else 1
+            overflow_count = max(0, slides_needed - 1)
+
+            if overflow_count > 0:
+                overflow_info.append({
+                    "field": field_name,
+                    "source_slide_index": source_slide_idx,
+                    "overflow_count": overflow_count,
+                    "items_per_slide": items_per_slide
+                })
+
+        return overflow_info
+
+    def _group_mappings_by_slide(self) -> Dict[int, List[Dict]]:
+        """Group shape mappings by their slide_index."""
+        grouped = {}
+        for mapping in self.mapping.get("shape_mappings", []):
+            slide_idx = mapping.get("slide_index", 0)
+            if slide_idx not in grouped:
+                grouped[slide_idx] = []
+            grouped[slide_idx].append(mapping)
+        return grouped
+
+    def _duplicate_slide(self, prs: Presentation, source_idx: int) -> int:
+        """
+        Duplicate a slide and append it to the presentation.
+        Uses python-pptx XML manipulation to copy the full slide layout.
+
+        Args:
+            prs: Presentation object
+            source_idx: Index of slide to duplicate
+
+        Returns:
+            Index of the new slide
+        """
+        source_slide = prs.slides[source_idx]
+
+        # Get the slide layout from source
+        slide_layout = source_slide.slide_layout
+
+        # Add a new slide with the same layout
+        new_slide = prs.slides.add_slide(slide_layout)
+
+        # Copy all shapes from source to new slide
+        for shape in source_slide.shapes:
+            self._copy_shape(shape, new_slide)
+
+        return len(prs.slides) - 1
+
+    def _copy_shape(self, shape, target_slide):
+        """
+        Copy a shape to a target slide.
+        Handles different shape types appropriately.
+        """
+        # Get shape XML
+        el = shape._element
+
+        # Create a deep copy of the shape XML
+        new_el = deepcopy(el)
+
+        # Add to target slide's shape tree
+        target_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
 
     def _get_shape_by_id(self, slide, shape_id: int):
         """Find a shape by its shape_id."""
@@ -190,8 +331,16 @@ class DynamicPPTGenerator:
         if hasattr(shape, "text"):
             shape.text = formatted
 
-    def _populate_table(self, table, mapping: Dict, data: Dict):
-        """Populate a table shape."""
+    def _populate_table(self, table, mapping: Dict, data: Dict, product_offset: int = 0):
+        """
+        Populate a table shape.
+
+        Args:
+            table: Table object to populate
+            mapping: Shape mapping configuration
+            data: Data dictionary
+            product_offset: Offset for products (used in multi-slide pagination)
+        """
         row_mappings = mapping.get("row_mappings", [])
         product_columns = mapping.get("product_columns", [1, 2])
         max_products = mapping.get("max_products", 2)
@@ -201,7 +350,9 @@ class DynamicPPTGenerator:
 
         if is_products_table:
             # Products table - populate multiple columns
-            products = data.get("products", [])[:max_products]
+            # Apply product_offset for multi-slide pagination
+            all_products = data.get("products", [])
+            products = all_products[product_offset:product_offset + max_products]
 
             for row_mapping in row_mappings:
                 row_idx = row_mapping["row_index"]
@@ -211,10 +362,17 @@ class DynamicPPTGenerator:
 
                 for prod_idx, col_idx in enumerate(product_columns):
                     if prod_idx >= len(products):
-                        break
+                        # Clear the cell if no product for this column
+                        try:
+                            cell = table.cell(row_idx, col_idx)
+                            cell.text = ""
+                        except IndexError:
+                            pass
+                        continue
 
-                    # Replace products[] with products[idx]
-                    field = field_template.replace("products[].", f"products.{prod_idx}.")
+                    # Replace products[] with products[idx] (using offset-adjusted index)
+                    actual_idx = product_offset + prod_idx
+                    field = field_template.replace("products[].", f"products.{actual_idx}.")
                     value = self._get_data_value(data, field, default)
                     formatted = self._format_value(value, format_str, default)
 
@@ -304,21 +462,24 @@ class DynamicOEMPresentationGenerator:
         self,
         scraping_result: Dict,
         template_path: str = "templates/IAA_Template.pptx",
-        output_dir: str = "outputs"
+        output_dir: str = "outputs",
+        max_products: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Generate presentation from scraping result.
+        Supports multi-slide output when there are more products than fit on one slide.
 
         Args:
             scraping_result: ScrapingResult dict from scraper
             template_path: Path to template file
             output_dir: Output directory
+            max_products: Maximum products to include (None = all)
 
         Returns:
             Result dict with presentation details
         """
         # Transform scraping result to template data format
-        data = self._transform_scraping_result(scraping_result)
+        data = self._transform_scraping_result(scraping_result, max_products)
 
         # Generate safe filename
         oem_name = data.get("oem_info", {}).get("oem_name", "Unknown")
@@ -331,12 +492,22 @@ class DynamicOEMPresentationGenerator:
 
         return {
             "oem_name": oem_name,
+            "products_count": len(data.get("products", [])),
             "data": data,
             "presentation_result": result
         }
 
-    def _transform_scraping_result(self, scraping_result: Dict) -> Dict:
-        """Transform scraping result to template data format."""
+    def _transform_scraping_result(self, scraping_result: Dict, max_products: Optional[int] = None) -> Dict:
+        """
+        Transform scraping result to template data format.
+
+        Args:
+            scraping_result: Raw scraping result
+            max_products: Maximum products to include (None = all)
+
+        Returns:
+            Transformed data dict for template generation
+        """
         oem_name = scraping_result.get('oem_name', 'Unknown OEM')
         oem_url = scraping_result.get('oem_url', '')
         vehicles = scraping_result.get('vehicles', [])
@@ -344,8 +515,9 @@ class DynamicOEMPresentationGenerator:
         # Extract domain
         domain = oem_url.split('/')[2] if '://' in oem_url else oem_url
 
-        # Transform vehicles to products
-        products = [self._transform_vehicle(v) for v in vehicles[:2]]
+        # Transform vehicles to products (no limit by default for multi-slide support)
+        vehicles_to_transform = vehicles if max_products is None else vehicles[:max_products]
+        products = [self._transform_vehicle(v) for v in vehicles_to_transform]
 
         # Generate computed fields
         highlights = self._generate_highlights(vehicles, oem_name)
@@ -481,12 +653,12 @@ if __name__ == "__main__":
     import sys
 
     print("=" * 60)
-    print("Dynamic PPT Generator Test")
+    print("Dynamic PPT Generator Test - Multi-Slide Support")
     print("=" * 60)
 
-    # Test with mock data
+    # Test with mock data - 5 products to test multi-slide overflow
     mock_scraping_result = {
-        "oem_name": "Test OEM (Dynamic)",
+        "oem_name": "Test OEM (Multi-Slide)",
         "oem_url": "https://www.testoem.eu",
         "vehicles": [
             {
@@ -504,6 +676,70 @@ if __name__ == "__main__":
                     "start_of_production": "2025",
                     "markets": "EU"
                 }
+            },
+            {
+                "vehicle_name": "eTruck X2",
+                "category": "Heavy-duty Truck",
+                "powertrain_type": "BEV",
+                "battery_capacity_kwh": 600,
+                "range_km": 500,
+                "motor_power_kw": 400,
+                "dc_charging_kw": 400,
+                "gvw_kg": 44000,
+                "additional_specs": {
+                    "wheel_formula": "6x4",
+                    "wheelbase_mm": 4800,
+                    "start_of_production": "2025",
+                    "markets": "EU, NA"
+                }
+            },
+            {
+                "vehicle_name": "eTruck X3 Long Range",
+                "category": "Heavy-duty Truck",
+                "powertrain_type": "BEV",
+                "battery_capacity_kwh": 800,
+                "range_km": 700,
+                "motor_power_kw": 450,
+                "dc_charging_kw": 450,
+                "gvw_kg": 40000,
+                "additional_specs": {
+                    "wheel_formula": "6x2",
+                    "wheelbase_mm": 5000,
+                    "start_of_production": "2026",
+                    "markets": "Global"
+                }
+            },
+            {
+                "vehicle_name": "eBus City 12m",
+                "category": "City Bus",
+                "powertrain_type": "BEV",
+                "battery_capacity_kwh": 350,
+                "range_km": 300,
+                "motor_power_kw": 250,
+                "dc_charging_kw": 150,
+                "gvw_kg": 19000,
+                "additional_specs": {
+                    "wheel_formula": "4x2",
+                    "wheelbase_mm": 5900,
+                    "start_of_production": "2024",
+                    "markets": "EU"
+                }
+            },
+            {
+                "vehicle_name": "eBus Coach 13m",
+                "category": "Coach",
+                "powertrain_type": "BEV",
+                "battery_capacity_kwh": 450,
+                "range_km": 400,
+                "motor_power_kw": 300,
+                "dc_charging_kw": 250,
+                "gvw_kg": 24000,
+                "additional_specs": {
+                    "wheel_formula": "6x2",
+                    "wheelbase_mm": 6500,
+                    "start_of_production": "2025",
+                    "markets": "EU, APAC"
+                }
             }
         ],
         "source_compliance_score": 0.85,
@@ -511,19 +747,30 @@ if __name__ == "__main__":
     }
 
     try:
-        # Test the generator
+        # Test the generator with all 5 products (should create 3 slides: 2+2+1 products)
+        print("\n--- Test 1: Multi-Slide (5 products) ---")
         generator = DynamicOEMPresentationGenerator()
         result = generator.generate_from_scraping_result(mock_scraping_result)
 
         print(f"\nGeneration Result:")
         print(f"  OEM: {result['oem_name']}")
+        print(f"  Products: {result['products_count']}")
         print(f"  Success: {result['presentation_result'].get('success')}")
         print(f"  Output: {result['presentation_result'].get('presentation_path')}")
+        print(f"  Slides created: {result['presentation_result'].get('slides_created', 1)}")
+        print(f"  Overflow slides: {result['presentation_result'].get('overflow_slides', 0)}")
         print(f"  Shapes populated: {result['presentation_result'].get('shapes_populated')}")
         print(f"  Duration: {result['presentation_result'].get('generation_duration_seconds')}s")
 
         if result['presentation_result'].get('errors'):
             print(f"  Errors: {result['presentation_result']['errors']}")
+
+        # Test 2: Single slide (2 products)
+        print("\n--- Test 2: Single Slide (2 products, limited) ---")
+        result2 = generator.generate_from_scraping_result(mock_scraping_result, max_products=2)
+        print(f"  Products: {result2['products_count']}")
+        print(f"  Slides created: {result2['presentation_result'].get('slides_created', 1)}")
+        print(f"  Success: {result2['presentation_result'].get('success')}")
 
     except FileNotFoundError as e:
         print(f"ERROR: {e}")

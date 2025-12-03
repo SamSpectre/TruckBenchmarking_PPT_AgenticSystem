@@ -3,8 +3,13 @@ Template Analysis Agent for Plug-and-Play PowerPoint System
 
 Uses LLM to intelligently map template structure to vehicle data fields.
 Generates JSON mapping configuration that can be used by the dynamic generator.
+Supports multi-slide templates with slide_index and pagination_rules.
 
 This is a standalone module - does NOT modify existing agents.
+
+Version History:
+- 1.0.0: Initial release
+- 2.0.0: Added multi-slide support with slide_index and pagination_rules
 """
 
 import json
@@ -121,7 +126,7 @@ class TemplateAnalysisAgent:
             }
 
     def _build_prompt(self, template_analysis: Dict, data_schema: Dict) -> str:
-        """Build the prompt for the LLM."""
+        """Build the prompt for the LLM with multi-slide support."""
         return f"""You are an expert at analyzing PowerPoint templates and mapping them to data schemas.
 
 ## TASK
@@ -144,14 +149,28 @@ Analyze this PowerPoint template structure and create a mapping configuration th
 4. Use "format" to specify how values should be formatted (e.g., "{{value}} kWh")
 5. Use "default" for fallback values when data is missing
 6. For lists (highlights, assessment, technologies): Use "type": "bullet_list"
+7. IMPORTANT: Include "slide_index" for each shape (0 for first slide, 1 for second, etc.)
+8. For product tables that may have many products, add "repeatable_for": "products" to enable multi-slide pagination
 
 ## OUTPUT FORMAT
 Return ONLY valid JSON (no markdown, no explanation) with this structure:
 {{
+    "version": "2.0.0",
+    "supports_multi_slide": true,
+    "pagination_rules": {{
+        "products": {{
+            "items_per_slide": 2,
+            "overflow_behavior": "duplicate_slide",
+            "source_slide_index": 0,
+            "shape_id": 8,
+            "description": "Duplicate slide when more than 2 products"
+        }}
+    }},
     "shape_mappings": [
         {{
             "shape_id": 2,
             "shape_name": "Title placeholder",
+            "slide_index": 0,
             "type": "text",
             "data_field": "oem_info.oem_name",
             "format": "{{value}}",
@@ -160,6 +179,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this structure:
         {{
             "shape_id": 7,
             "shape_name": "Company Info Table",
+            "slide_index": 0,
             "type": "table",
             "row_mappings": [
                 {{"row_index": 0, "col_index": 1, "data_field": "oem_info.country", "format": "{{value}}", "default": ""}},
@@ -167,8 +187,21 @@ Return ONLY valid JSON (no markdown, no explanation) with this structure:
             ]
         }},
         {{
+            "shape_id": 8,
+            "shape_name": "Products Table",
+            "slide_index": 0,
+            "type": "table",
+            "repeatable_for": "products",
+            "row_mappings": [
+                {{"row_index": 0, "data_field": "products[].name", "format": "{{value}}", "default": ""}}
+            ],
+            "product_columns": [1, 2],
+            "max_products": 2
+        }},
+        {{
             "shape_id": 25,
             "shape_name": "Highlights",
+            "slide_index": 0,
             "type": "bullet_list",
             "data_field": "computed_fields.expected_highlights",
             "max_items": 4
@@ -179,7 +212,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this structure:
     ]
 }}
 
-Analyze the template and generate the mapping. Return ONLY the JSON."""
+Analyze the template and generate the mapping with multi-slide support. Return ONLY the JSON."""
 
     def _parse_response(self, response_text: str) -> Dict:
         """Parse LLM response and extract JSON."""
@@ -216,28 +249,44 @@ Analyze the template and generate the mapping. Return ONLY the JSON."""
     def generate_mapping_manual(self, template_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate a basic mapping without LLM (rule-based fallback).
+        Includes multi-slide support with slide_index and pagination_rules.
 
         Useful when LLM is unavailable or for simple templates.
         """
         mapping = {
             "template_name": template_analysis.get("template_name", "unknown"),
             "template_hash": template_analysis.get("template_hash", ""),
+            "version": "2.0.0",
+            "supports_multi_slide": True,
             "generated_at": datetime.now().isoformat(),
             "generation_method": "rule_based",
+            "pagination_rules": {
+                "products": {
+                    "items_per_slide": 2,
+                    "overflow_behavior": "duplicate_slide",
+                    "source_slide_index": 0,
+                    "description": "Duplicate slide when more than 2 products"
+                }
+            },
             "shape_mappings": [],
             "unmapped_shapes": []
         }
+
+        # Track if we found a products table for pagination_rules
+        products_table_shape_id = None
 
         for element in template_analysis.get("mappable_elements", []):
             shape_id = element["shape_id"]
             shape_type = element["type"]
             content = element.get("current_content", "").lower()
             name = element.get("shape_name", "").lower()
+            slide_index = element.get("slide_index", 0)
 
             # Rule-based mapping
             shape_mapping = {
                 "shape_id": shape_id,
                 "shape_name": element.get("shape_name", ""),
+                "slide_index": slide_index,
                 "type": "unknown"
             }
 
@@ -269,6 +318,23 @@ Analyze the template and generate the mapping. Return ONLY the JSON."""
                 shape_mapping["row_mappings"] = []
 
                 row_labels = table_info.get("row_labels", [])
+
+                # Check if this looks like a products table (multiple columns, vehicle-related labels)
+                is_products_table = False
+                num_cols = table_info.get("dimensions", {}).get("cols", 0)
+                if num_cols >= 3:
+                    product_related_labels = ["name", "model", "vehicle", "product", "battery", "range", "power"]
+                    if any(any(label.lower().find(pl) >= 0 for pl in product_related_labels) for label in row_labels):
+                        is_products_table = True
+
+                if is_products_table:
+                    shape_mapping["repeatable_for"] = "products"
+                    shape_mapping["product_columns"] = [1, 2]
+                    shape_mapping["max_products"] = 2
+                    products_table_shape_id = shape_id
+                    # Update pagination rules with actual shape_id
+                    mapping["pagination_rules"]["products"]["shape_id"] = shape_id
+
                 for row_idx, label in enumerate(row_labels):
                     label_lower = label.lower()
                     field = None
@@ -281,28 +347,30 @@ Analyze the template and generate the mapping. Return ONLY the JSON."""
                     elif "category" in label_lower:
                         field = "oem_info.category"
                     elif "name" in label_lower and "vehicle" not in label_lower:
-                        field = "vehicle_specs.vehicle_name"
+                        field = "products[].name" if is_products_table else "vehicle_specs.vehicle_name"
                     elif "battery" in label_lower:
-                        field = "vehicle_specs.battery_capacity_kwh"
+                        field = "products[].battery" if is_products_table else "vehicle_specs.battery_capacity_kwh"
                     elif "range" in label_lower:
-                        field = "vehicle_specs.range_km"
+                        field = "products[].range" if is_products_table else "vehicle_specs.range_km"
                     elif "power" in label_lower or "performance" in label_lower:
-                        field = "vehicle_specs.motor_power_kw"
+                        field = "products[].performance" if is_products_table else "vehicle_specs.motor_power_kw"
                     elif "charg" in label_lower:
-                        field = "vehicle_specs.dc_charging_kw"
+                        field = "products[].charging" if is_products_table else "vehicle_specs.dc_charging_kw"
                     elif "gvw" in label_lower or "weight" in label_lower:
-                        field = "vehicle_specs.gvw_kg"
+                        field = "products[].gvw_gcw" if is_products_table else "vehicle_specs.gvw_kg"
                     elif "wheel" in label_lower:
-                        field = "additional_specs.wheel_formula"
+                        field = "products[].wheel_formula" if is_products_table else "additional_specs.wheel_formula"
 
                     if field:
-                        shape_mapping["row_mappings"].append({
+                        row_mapping = {
                             "row_index": row_idx,
-                            "col_index": 1,  # Assume value in second column
                             "data_field": field,
                             "format": "{value}",
                             "default": "N/A"
-                        })
+                        }
+                        if not is_products_table:
+                            row_mapping["col_index"] = 1  # Assume value in second column
+                        shape_mapping["row_mappings"].append(row_mapping)
 
             else:
                 mapping["unmapped_shapes"].append({

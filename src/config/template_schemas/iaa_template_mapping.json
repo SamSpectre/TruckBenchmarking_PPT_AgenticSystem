@@ -1,0 +1,183 @@
+{
+  "template_name": "IAA_Template",
+  "template_hash": "545a77d553ef",
+  "generated_at": "2025-12-03T15:14:40.530188",
+  "generation_method": "rule_based",
+  "shape_mappings": [
+    {
+      "shape_id": 2,
+      "shape_name": "Title 1",
+      "type": "text",
+      "data_field": "oem_info.oem_name"
+    },
+    {
+      "shape_id": 7,
+      "shape_name": "Tabelle 23",
+      "type": "table",
+      "row_mappings": [
+        {
+          "row_index": 1,
+          "col_index": 1,
+          "data_field": "oem_info.country",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 3,
+          "col_index": 1,
+          "data_field": "oem_info.website",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 5,
+          "col_index": 1,
+          "data_field": "oem_info.category",
+          "format": "{value}",
+          "default": "N/A"
+        }
+      ]
+    },
+    {
+      "shape_id": 8,
+      "shape_name": "Tabelle 23",
+      "type": "table",
+      "row_mappings": [
+        {
+          "row_index": 1,
+          "col_index": 1,
+          "data_field": "additional_specs.wheel_formula",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 2,
+          "col_index": 1,
+          "data_field": "additional_specs.wheel_formula",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 3,
+          "col_index": 1,
+          "data_field": "vehicle_specs.gvw_kg",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 4,
+          "col_index": 1,
+          "data_field": "vehicle_specs.range_km",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 5,
+          "col_index": 1,
+          "data_field": "vehicle_specs.battery_capacity_kwh",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 8,
+          "col_index": 1,
+          "data_field": "vehicle_specs.dc_charging_kw",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 9,
+          "col_index": 1,
+          "data_field": "vehicle_specs.motor_power_kw",
+          "format": "{value}",
+          "default": "N/A"
+        },
+        {
+          "row_index": 10,
+          "col_index": 1,
+          "data_field": "vehicle_specs.motor_power_kw",
+          "format": "{value}",
+          "default": "N/A"
+        }
+      ]
+    }
+  ],
+  "unmapped_shapes": [
+    {
+      "shape_id": 6,
+      "reason": "Unsupported shape type: EMBEDDED_OLE_OBJECT (7)"
+    },
+    {
+      "shape_id": 4,
+      "reason": "Could not determine mapping for: footer placeholder 3"
+    },
+    {
+      "shape_id": 5,
+      "reason": "Could not determine mapping for: slide number placeholder 4"
+    },
+    {
+      "shape_id": 10,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 13,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 14,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 15,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 16,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 17,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 18,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 19,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 20,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 21,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 22,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 23,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 3,
+      "reason": "Unsupported shape type: AUTO_SHAPE"
+    },
+    {
+      "shape_id": 25,
+      "reason": "Could not determine mapping for: textfeld 24"
+    },
+    {
+      "shape_id": 26,
+      "reason": "Could not determine mapping for: textfeld 25"
+    },
+    {
+      "shape_id": 27,
+      "reason": "Could not determine mapping for: textfeld 26"
+    }
+  ]
+}

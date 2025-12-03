@@ -1,0 +1,121 @@
+{
+  "template_name": "IAA_Template",
+  "template_hash": "545a77d553ef",
+  "description": "IAA Commercial Vehicle Show benchmarking template",
+  "version": "1.0.0",
+  "created_at": "2025-12-03T00:00:00",
+  "created_by": "manual_conversion",
+  "notes": "Converted from hardcoded SHAPE_IDS and PRODUCT_TABLE_ROWS in ppt_generator.py",
+
+  "shape_mappings": [
+    {
+      "shape_id": 2,
+      "shape_name": "Title 1",
+      "type": "text",
+      "data_field": "oem_info.oem_name",
+      "format": "{value}",
+      "default": "Unknown OEM",
+      "description": "Company name in title placeholder"
+    },
+    {
+      "shape_id": 7,
+      "shape_name": "Company Info Table",
+      "type": "table",
+      "description": "6x2 table with company information",
+      "row_mappings": [
+        {"row_index": 1, "col_index": 1, "data_field": "oem_info.country", "format": "{value}", "default": ""},
+        {"row_index": 2, "col_index": 1, "data_field": "oem_info.address", "format": "{value}", "default": ""},
+        {"row_index": 3, "col_index": 1, "data_field": "oem_info.website", "format": "{value}", "default": ""},
+        {"row_index": 4, "col_index": 1, "data_field": "oem_info.booth", "format": "{value}", "default": ""},
+        {"row_index": 5, "col_index": 1, "data_field": "oem_info.category", "format": "{value}", "default": ""}
+      ]
+    },
+    {
+      "shape_id": 8,
+      "shape_name": "Products Table",
+      "type": "table",
+      "description": "14x3 table with product specifications (up to 2 products)",
+      "row_mappings": [
+        {"row_index": 0, "data_field": "products[].name", "format": "{value}", "default": ""},
+        {"row_index": 1, "data_field": "products[].wheel_formula", "format": "{value}", "default": "N/A"},
+        {"row_index": 2, "data_field": "products[].wheelbase", "format": "{value}", "default": "N/A"},
+        {"row_index": 3, "data_field": "products[].gvw_gcw", "format": "{value}", "default": "N/A"},
+        {"row_index": 4, "data_field": "products[].range", "format": "{value}", "default": "N/A"},
+        {"row_index": 5, "data_field": "products[].battery", "format": "{value}", "default": "N/A"},
+        {"row_index": 6, "data_field": "products[].fuel_cell", "format": "{value}", "default": "N/A"},
+        {"row_index": 7, "data_field": "products[].h2_tank", "format": "{value}", "default": "N/A"},
+        {"row_index": 8, "data_field": "products[].charging", "format": "{value}", "default": "N/A"},
+        {"row_index": 9, "data_field": "products[].performance", "format": "{value}", "default": "N/A"},
+        {"row_index": 10, "data_field": "products[].powertrain", "format": "{value}", "default": "Electric"},
+        {"row_index": 11, "data_field": "products[].sop", "format": "{value}", "default": "TBD"},
+        {"row_index": 12, "data_field": "products[].markets", "format": "{value}", "default": "N/A"},
+        {"row_index": 13, "data_field": "products[].application", "format": "{value}", "default": "Commercial Vehicle"}
+      ],
+      "product_columns": [1, 2],
+      "max_products": 2
+    },
+    {
+      "shape_id": 25,
+      "shape_name": "Expected Highlights",
+      "type": "bullet_list",
+      "data_field": "computed_fields.expected_highlights",
+      "max_items": 4,
+      "font_size_pt": 9,
+      "description": "TextBox for expected highlights bullets"
+    },
+    {
+      "shape_id": 27,
+      "shape_name": "Assessment",
+      "type": "bullet_list",
+      "data_field": "computed_fields.assessment",
+      "max_items": 3,
+      "font_size_pt": 9,
+      "description": "TextBox for assessment bullets"
+    },
+    {
+      "shape_id": 26,
+      "shape_name": "Technologies",
+      "type": "bullet_list",
+      "data_field": "computed_fields.technologies",
+      "max_items": 5,
+      "font_size_pt": 9,
+      "description": "TextBox for technologies bullets"
+    }
+  ],
+
+  "static_shapes": [
+    {"shape_id": 23, "description": "OEM label header"},
+    {"shape_id": 17, "description": "Cooperations header"},
+    {"shape_id": 4, "description": "Footer placeholder"},
+    {"shape_id": 5, "description": "Slide number placeholder"}
+  ],
+
+  "unmapped_shapes": [
+    {"shape_id": 6, "reason": "Embedded OLE object (think-cell)"},
+    {"shape_id": 20, "reason": "Pictures area - requires manual image upload"},
+    {"shape_id": 21, "reason": "Cooperations area - requires manual data"},
+    {"shape_id": 22, "reason": "Logo area - requires manual image upload"}
+  ],
+
+  "data_transformations": {
+    "vehicle_to_product": {
+      "description": "Transform VehicleSpecifications to IAA product format",
+      "mappings": {
+        "name": "vehicle_name",
+        "wheel_formula": "additional_specs.wheel_formula",
+        "wheelbase": {"field": "additional_specs.wheelbase_mm", "format": "{value} mm"},
+        "gvw_gcw": {"field": "gvw_kg", "format": "{value} kg GVW"},
+        "range": {"field": "range_km", "format": "{value} km"},
+        "battery": {"field": "battery_capacity_kwh", "format": "{value} kWh"},
+        "fuel_cell": {"field": "additional_specs.fuel_cell_kw", "format": "{value} kW"},
+        "h2_tank": {"field": "additional_specs.h2_tank_kg", "format": "{value} kg"},
+        "charging": {"field": "dc_charging_kw", "format": "{value} kW DC"},
+        "performance": {"field": "motor_power_kw", "format": "{value} kW"},
+        "powertrain": "powertrain_type",
+        "sop": "additional_specs.start_of_production",
+        "markets": "additional_specs.markets",
+        "application": "category"
+      }
+    }
+  }
+}

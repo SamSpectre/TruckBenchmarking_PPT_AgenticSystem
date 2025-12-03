@@ -44,12 +44,21 @@ class ScraperConfig:
     MAX_TOKENS = 8000
     TEMPERATURE = 0.1
     WAIT_BETWEEN_URLS = 8  # seconds
-    MAX_CONTENT_LENGTH = 40000  # Max chars to send to Perplexity (increased for spec-heavy pages)
+    MAX_CONTENT_LENGTH = 40000  # Max chars to send for extraction (increased for spec-heavy pages)
 
     # Intelligent Navigation Settings
-    MAX_PAGES_PER_OEM = 5  # Maximum pages to crawl per OEM
+    MAX_PAGES_PER_OEM = 12  # Maximum pages to crawl per OEM (increased for better coverage)
     LLM_EXTRACTION_MODEL = "openai/gpt-4o-mini"  # Fast & cheap LLM for extraction
     ENABLE_INTELLIGENT_NAVIGATION = True  # Use LLM-guided navigation
+
+    # Auto-Fallback Settings
+    AUTO_FALLBACK_ENABLED = True  # Automatically switch to intelligent mode if data quality is low
+    MIN_COMPLETENESS_THRESHOLD = 0.4  # Minimum average completeness to accept (0.0-1.0)
+    MIN_VEHICLES_WITH_DATA = 0.5  # At least 50% of vehicles must have >0 completeness
+    FALLBACK_ON_ZERO_VEHICLES = True  # Always fallback if no vehicles extracted
+
+    # Vehicle category filtering (for truck pages, exclude buses)
+    VEHICLE_CATEGORY_FILTER = "truck"  # Set to None to include all, or "truck", "bus", etc.
 
 
 # =====================================================================
@@ -350,26 +359,43 @@ class IntelligentScraper:
                 ),
                 schema=SpecPageLinks.model_json_schema(),
                 extraction_type="schema",
-                instruction=f"""Analyze these links from an OEM website ({source_url}).
+                instruction=f"""Analyze these links from an OEM commercial vehicle website ({source_url}).
 
-Identify links that lead to ELECTRIC VEHICLE SPECIFICATION pages.
+Your task: Find links to pages with TECHNICAL SPECIFICATIONS for electric trucks.
 
-Look for patterns like:
-- /electric/, /e-trucks/, /ev/, /specifications/, /specs/, /technical-data/
-- Vehicle model names (eTGX, eTGS, eTGL, FH Electric, eActros, etc.)
-- Technical data or data sheet pages
-- Product detail pages for electric/hybrid vehicles
+**CRITICAL: PRIORITIZE INDIVIDUAL MODEL PAGES OVER GENERAL INFO PAGES**
 
-EXCLUDE:
+PRIORITY 1 - INDIVIDUAL VEHICLE MODEL PAGES (MOST IMPORTANT):
+- URLs with specific EV model names: eTGX, eTGS, eTGL, eActros, FH Electric, FM Electric, etc.
+- Pattern: /all-models/*, /the-man-etgx/*, /the-man-etgs/*, /the-man-etgl/*, /models/*
+- Product detail pages for EACH electric vehicle variant
+- Example good URLs: ".../the-man-tgx/the-man-etgx/overview.html", ".../the-man-tgs/the-man-etgs/..."
+
+PRIORITY 2 - Technical Data/Spec Pages:
+- URLs with: /spec, /technical, /tech-data, /data-sheet, technische-daten
+- Pages titled "Technical Data", "Specifications", "Key Facts"
+- Data sheet or brochure pages
+
+PRIORITY 3 - Electric Vehicle Overview Pages:
+- URLs with: /electric-trucks/, /e-truck/, /ev/, /bev/
+- Portfolio or lineup pages listing multiple EVs
+
+**EXCLUDE (NEVER include these):**
+- /charging-infrastructure, /charging-and-battery-management (general info, not vehicle specs)
+- /battery-regulation, /regulation (legal/regulatory pages)
+- /range-calculator, /ereadycheck (tools, not specs)
 - News, press releases, blog posts
-- Careers, contact, legal pages
-- General company info, investor relations
-- Non-electric vehicle pages
+- /service/, /advice/, /consulting/ (support pages)
+- /bus/, /lion-city (bus pages when looking for trucks)
+- Careers, contact, legal, privacy pages
+- Image galleries, videos, downloads
+- Social media links
 
 Available links:
 {link_text}
 
-Return ONLY links that likely contain vehicle specifications.
+Return UP TO 10 links that lead to ACTUAL VEHICLE SPECIFICATION PAGES with battery kWh, range km, motor kW, GVW data.
+Prioritize individual model pages (eTGX, eTGS, eTGL separately) over generic overview pages.
 """,
                 input_format="markdown"
             )
@@ -402,21 +428,78 @@ Return ONLY links that likely contain vehicle specifications.
         return self._filter_links_by_pattern(list(seen_urls), source_url)
 
     def _filter_links_by_pattern(self, urls: List[str], source_url: str) -> List[str]:
-        """Fallback: Filter links using URL patterns"""
-        spec_patterns = [
-            r'/e-?truck', r'/electric', r'/ev/', r'/bev/', r'/fcev/',
-            r'/spec', r'/technical', r'/data-?sheet',
-            r'etg[xsl]', r'eactros', r'fh-?electric', r'vnr-?electric',
-            r'/product', r'/model', r'/range'
+        """Fallback: Filter links using URL patterns for technical spec pages"""
+
+        # HIGHEST priority - Individual vehicle model pages (these have the real specs)
+        model_page_patterns = [
+            r'/the-man-etgx/', r'/the-man-etgs/', r'/the-man-etgl/',  # MAN specific
+            r'/all-models/.*?/overview', r'/models/.*?e.*?/',  # Generic model pages
+            r'eactros.*?overview', r'fh.*?electric.*?overview',  # Other OEMs
+            r'/e-?actros/', r'/fh-?electric/', r'/fm-?electric/',
+            r'/ecanter/', r'/e-?truck/', r'/electric-truck/',
         ]
 
-        spec_urls = []
+        # High priority - Technical data pages
+        tech_data_patterns = [
+            r'/spec', r'/technical', r'/data-?sheet', r'/tech-?data',
+            r'technische-daten', r'specifications', r'fiche-technique',
+            r'key-?facts', r'highlights',
+        ]
+
+        # Medium priority - Generic electric vehicle pages
+        ev_patterns = [
+            r'/electric-trucks/', r'/ev/', r'/bev/', r'/fcev/',
+            r'etg[xsl]', r'eactros', r'fh-?electric', r'vnr-?electric',
+            r'fm-?electric', r'fmx-?electric', r'fe-?electric', r'fl-?electric',
+            r'ecanter', r'eseries',
+        ]
+
+        # Low priority - overview pages
+        overview_patterns = [
+            r'/overview\.html$', r'/lineup', r'/portfolio',
+        ]
+
+        # EXPLICIT EXCLUSION patterns - these pages don't have real vehicle specs
+        exclude_patterns = [
+            r'/charging-infrastructure', r'/charging-and-battery-management',
+            r'/battery-regulation', r'/regulation',
+            r'/range-calculator', r'/ereadycheck', r'/configurator',
+            r'/service/', r'/advice/', r'/consulting/', r'/getting-started',
+            r'/fleet-management/', r'/general/',
+            r'/bus/', r'/lion.*city', r'/city-bus',  # Exclude buses for truck pages
+            r'/news', r'/press', r'/career', r'/job', r'/contact',
+            r'/legal', r'/privacy', r'/cookie', r'/investor',
+            r'/about-us', r'/history', r'/sustainability',
+            r'\.pdf', r'\.jpg', r'\.png', r'/media/', r'/download',
+            r'/video', r'/gallery', r'/image',
+        ]
+
+        model_pages = []
+        tech_pages = []
+        ev_pages = []
+        overview_pages = []
+
         for url in urls:
             url_lower = url.lower()
-            if any(re.search(p, url_lower) for p in spec_patterns):
-                spec_urls.append(url)
 
-        # Always include source URL
+            # Skip explicitly excluded pages
+            if any(re.search(p, url_lower) for p in exclude_patterns):
+                continue
+
+            # Categorize by priority
+            if any(re.search(p, url_lower) for p in model_page_patterns):
+                model_pages.append(url)
+            elif any(re.search(p, url_lower) for p in tech_data_patterns):
+                tech_pages.append(url)
+            elif any(re.search(p, url_lower) for p in ev_patterns):
+                ev_pages.append(url)
+            elif any(re.search(p, url_lower) for p in overview_patterns):
+                overview_pages.append(url)
+
+        # Combine in priority order: model pages first!
+        spec_urls = model_pages + tech_pages + ev_pages + overview_pages
+
+        # Always include source URL at the start
         if source_url not in spec_urls:
             spec_urls.insert(0, source_url)
 
@@ -456,12 +539,23 @@ Return ONLY links that likely contain vehicle specifications.
 
         return results
 
+    def _ensure_kg_weight(self, value: Optional[float]) -> Optional[float]:
+        """Convert weight to kg if it looks like it's in tons"""
+        if value is None:
+            return None
+        # Commercial trucks: 12,000-80,000 kg GVW typically
+        # If value < 100, it's likely in tons
+        if value < 100:
+            return value * 1000
+        return value
+
     async def _extract_specs(self, url: str, content: str) -> List[Dict]:
         """
         Phase 3: Extract structured vehicle specifications using OpenAI directly.
 
         Uses the already-fetched content (from Phase 2) and calls OpenAI API
         directly for high-accuracy structured extraction with JSON mode.
+        Focuses on finding technical data tables and specification sections.
         """
         try:
             # Truncate content if too long
@@ -472,47 +566,75 @@ Return ONLY links that likely contain vehicle specifications.
             import openai
             client = openai.OpenAI(api_key=self.api_key)
 
-            extraction_prompt = f"""Extract ALL electric/hybrid commercial vehicle specifications from this webpage content.
+            extraction_prompt = f"""Extract electric commercial TRUCK specifications from this webpage.
 
 WEBPAGE CONTENT:
 ---
 {content}
 ---
 
-For each vehicle found, extract:
-- vehicle_name: Full model name (e.g., "MAN eTGX 4x2", "Volvo FH Electric")
-- battery_capacity_kwh: Battery capacity in kWh (number only)
-- battery_voltage_v: Battery system voltage in V (number only)
-- motor_power_kw: Motor power in kW (number only)
-- motor_torque_nm: Motor torque in Nm (number only)
-- range_km: Driving range in km (number only)
-- dc_charging_kw: DC fast charging power in kW (number only)
-- charging_time_minutes: Charging time in minutes (number only)
-- gvw_kg: Gross vehicle weight in kg (number only, convert tons to kg: 1 ton = 1000 kg)
-- payload_capacity_kg: Payload capacity in kg (number only)
-- powertrain_type: "BEV" for battery electric, "FCEV" for fuel cell, "PHEV" for plug-in hybrid
-- energy_consumption_kwh_100km: Energy consumption in kWh/100km (number only)
+**CRITICAL: Only extract data that is EXPLICITLY stated in the content above!**
 
-IMPORTANT:
-- Extract ALL vehicles mentioned, even if some specs are missing
-- Use null for missing values, DO NOT estimate or infer values
-- Convert units if needed (e.g., 28 tons = 28000 kg)
-- Include all variants if the same vehicle has different configurations
-- Focus on electric powertrains (BEV, FCEV, PHEV) - ignore conventional diesel/petrol
+LOOK FOR these data sources in the content:
+1. Technical specification tables (rows with "Battery", "Range", "Power", "GVW")
+2. Key facts or highlights sections with numbers
+3. Product comparison tables with specs
+4. Spec sheets or data sheets
 
-Return ONLY a valid JSON object with this structure:
+For EACH electric TRUCK found (NOT buses), extract:
+- vehicle_name: Full model name with variant (e.g., "MAN eTGX 4x2 semitrailer", "MAN eTGS 6x2")
+- battery_capacity_kwh: Battery in kWh (use MAX if range given, e.g., "320-480 kWh" -> 480)
+- battery_capacity_min_kwh: MIN battery if range given (e.g., "320-480 kWh" -> 320)
+- motor_power_kw: Motor power in kW (convert: 1 PS = 0.735 kW, 1 hp = 0.746 kW)
+- motor_torque_nm: Torque in Nm
+- range_km: Driving range in km (use MAX if range, e.g., "500-750 km" -> 750)
+- range_min_km: MIN range if given (e.g., "500-750 km" -> 500)
+- dc_charging_kw: DC charging power in kW (CCS, MCS, Megawatt)
+- charging_time_minutes: Charging time (to 80%)
+- gvw_kg: Gross Vehicle Weight in KG (CONVERT: 28t/28 tons = 28000 kg, NOT 28!)
+- payload_capacity_kg: Payload in kg
+- powertrain_type: "BEV" | "FCEV" | "PHEV"
+- available_configurations: Array like ["4x2", "6x2"]
+
+**STRICT RULES - FOLLOW EXACTLY:**
+1. ONLY extract specs that appear in the content - NEVER invent or estimate values
+2. If a spec is not mentioned, use null - do NOT guess
+3. Do NOT include buses (Lion's City, City Bus, etc.) - trucks only
+4. WEIGHT: Always convert tons to kg (28t = 28000 kg, not 28)
+5. If same model has variants (4x2 vs 6x2), extract each as separate vehicle
+6. Each variant with different specs should be a separate entry
+7. If content mentions "up to X kWh", extract X as max value
+8. Use gvw_kg NOT gvwr_kg
+
+**VALIDATION - Common MAN truck specs for reference (do NOT use these if not in content):**
+- eTGX: 320-560 kWh battery, 500-750 km range
+- eTGS: 400-480 kWh battery
+- eTGL: ~160 kWh battery, ~235 km range
+If extracted values are wildly different (e.g., 600 kWh for eTGX), verify in content!
+
+Return ONLY valid JSON:
 {{"vehicles": [
-  {{"vehicle_name": "...", "battery_capacity_kwh": ..., ...}},
+  {{"vehicle_name": "MAN eTGX 4x2 semitrailer", "battery_capacity_kwh": 480, "battery_capacity_min_kwh": 320, "range_km": 500, "gvw_kg": 44000, ...}},
   ...
 ]}}"""
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a data extraction assistant. Extract vehicle specifications from webpage content and return valid JSON only."},
+                    {"role": "system", "content": """You are a precise technical data extraction expert for commercial vehicle specifications.
+
+CRITICAL RULES:
+1. ONLY extract data explicitly stated in the provided content
+2. NEVER hallucinate, estimate, or infer values not directly stated
+3. Use null for any specification not found in the content
+4. Convert tons to kg (multiply by 1000)
+5. For ranges (e.g., "320-480 kWh"), extract both min and max values
+6. Exclude buses - extract trucks only
+
+Your accuracy is critical for automotive benchmarking. Wrong data is worse than missing data."""},
                     {"role": "user", "content": extraction_prompt}
                 ],
-                temperature=0.1,
+                temperature=0.0,  # Zero temperature for maximum determinism
                 response_format={"type": "json_object"}
             )
 
@@ -522,21 +644,27 @@ Return ONLY a valid JSON object with this structure:
             vehicles_data = extracted.get('vehicles', [])
             vehicles = []
             for v in vehicles_data:
+                # Get GVW with fallback for both field names
+                gvw_raw = v.get('gvw_kg') or v.get('gvwr_kg')
+
                 vehicle_dict = {
                     'vehicle_name': v.get('vehicle_name', 'Unknown'),
                     'source_url': url,
                     'extraction_timestamp': datetime.now().isoformat(),
                     'battery_capacity_kwh': v.get('battery_capacity_kwh'),
+                    'battery_capacity_min_kwh': v.get('battery_capacity_min_kwh'),
                     'battery_voltage_v': v.get('battery_voltage_v'),
                     'motor_power_kw': v.get('motor_power_kw'),
                     'motor_torque_nm': v.get('motor_torque_nm'),
                     'range_km': v.get('range_km'),
+                    'range_min_km': v.get('range_min_km'),
                     'dc_charging_kw': v.get('dc_charging_kw'),
                     'charging_time_minutes': v.get('charging_time_minutes'),
-                    'gvw_kg': v.get('gvw_kg'),
-                    'payload_capacity_kg': v.get('payload_capacity_kg'),
-                    'powertrain_type': v.get('powertrain_type'),
+                    'gvw_kg': self._ensure_kg_weight(gvw_raw),
+                    'payload_capacity_kg': self._ensure_kg_weight(v.get('payload_capacity_kg')),
+                    'powertrain_type': v.get('powertrain_type', 'BEV'),
                     'energy_consumption_kwh_100km': v.get('energy_consumption_kwh_100km'),
+                    'available_configurations': v.get('available_configurations', []),
                 }
                 vehicles.append(vehicle_dict)
             return vehicles
@@ -546,24 +674,143 @@ Return ONLY a valid JSON object with this structure:
 
         return []
 
+    def _get_source_quality_score(self, url: str) -> int:
+        """
+        Score the source URL quality - model-specific pages are more reliable.
+        Higher score = more reliable source.
+        """
+        url_lower = url.lower()
+
+        # Best: Individual model pages (e.g., /the-man-etgx/overview.html)
+        model_patterns = [
+            r'/the-man-etgx/', r'/the-man-etgs/', r'/the-man-etgl/',
+            r'/all-models/.*?/the-man-e', r'/models/.*?electric',
+            r'/e-?actros/', r'/fh-?electric/', r'/fm-?electric/',
+        ]
+        if any(re.search(p, url_lower) for p in model_patterns):
+            return 100
+
+        # Good: Technical data pages
+        tech_patterns = [r'/spec', r'/technical', r'/data-?sheet', r'technische-daten']
+        if any(re.search(p, url_lower) for p in tech_patterns):
+            return 80
+
+        # OK: General electric truck overview pages
+        ev_patterns = [r'/electric-trucks/', r'/electric.*?overview']
+        if any(re.search(p, url_lower) for p in ev_patterns):
+            return 60
+
+        # Poor: General info pages (charging, battery regulation, etc.)
+        bad_patterns = [
+            r'/charging', r'/battery-regulation', r'/regulation',
+            r'/service/', r'/advice/', r'/consulting/', r'/general/',
+        ]
+        if any(re.search(p, url_lower) for p in bad_patterns):
+            return 20
+
+        # Default
+        return 40
+
     def _deduplicate(self, vehicles: List[Dict]) -> List[Dict]:
-        """Remove duplicate vehicles by name, keeping the most complete entry"""
+        """
+        Remove duplicate vehicles by name, using smart quality-based selection.
+
+        Priority order:
+        1. Source URL quality (model pages > generic pages)
+        2. Data completeness (more filled fields = better)
+        3. Specific variants over generic names
+        """
         seen = {}
+
         for v in vehicles:
             name = v.get('vehicle_name', '').lower().strip()
             if not name:
                 continue
 
-            if name not in seen:
-                seen[name] = v
-            else:
-                # Keep the one with more filled fields
-                existing_fields = sum(1 for val in seen[name].values() if val is not None)
-                new_fields = sum(1 for val in v.values() if val is not None)
-                if new_fields > existing_fields:
-                    seen[name] = v
+            # Skip buses if filtering for trucks
+            if self._is_excluded_vehicle(v):
+                continue
 
-        return list(seen.values())
+            # Normalize name for matching
+            # e.g., "MAN eTGX" and "MAN eTGX 4x2" should be separate
+            # but "MAN eTGX" from two sources should dedupe
+            normalized_name = self._normalize_vehicle_name(name)
+
+            source_url = v.get('source_url', '')
+            source_quality = self._get_source_quality_score(source_url)
+
+            # Count important filled fields (more specific than just any field)
+            important_fields = [
+                'battery_capacity_kwh', 'range_km', 'motor_power_kw', 'gvw_kg',
+                'dc_charging_kw', 'charging_time_minutes', 'payload_capacity_kg'
+            ]
+            data_completeness = sum(1 for f in important_fields if v.get(f) is not None)
+
+            # Combined quality score
+            quality_score = source_quality + (data_completeness * 10)
+            v['_quality_score'] = quality_score
+
+            if normalized_name not in seen:
+                seen[normalized_name] = v
+            else:
+                existing = seen[normalized_name]
+                existing_quality = existing.get('_quality_score', 0)
+
+                # Keep the one with better quality score
+                if quality_score > existing_quality:
+                    seen[normalized_name] = v
+                # If same quality, prefer the one with more specific name
+                elif quality_score == existing_quality:
+                    if len(name) > len(existing.get('vehicle_name', '')):
+                        seen[normalized_name] = v
+
+        # Clean up internal score field
+        result = []
+        for v in seen.values():
+            v.pop('_quality_score', None)
+            result.append(v)
+
+        return result
+
+    def _normalize_vehicle_name(self, name: str) -> str:
+        """
+        Normalize vehicle name for deduplication matching.
+
+        E.g., "MAN eTGX 4x2 semitrailer" -> "man etgx 4x2 semitrailer" (unique)
+             "MAN eTGX" -> "man etgx" (generic, can be replaced)
+        """
+        # Keep configuration details as they represent different variants
+        return name.lower().strip()
+
+    def _is_excluded_vehicle(self, vehicle: Dict) -> bool:
+        """Check if vehicle should be excluded based on category filter."""
+        category_filter = ScraperConfig.VEHICLE_CATEGORY_FILTER
+        if not category_filter:
+            return False
+
+        name = vehicle.get('vehicle_name', '') or ''
+        name = name.lower()
+        source_url = vehicle.get('source_url', '') or ''
+        source_url = source_url.lower()
+        configs = vehicle.get('available_configurations') or []
+
+        # If filtering for trucks, exclude buses
+        if category_filter == "truck":
+            bus_indicators = [
+                'lion city', 'city bus', 'citybus', 'coach',
+                'neoplan', 'citaro', 'setra'
+            ]
+            # Check name (be careful not to exclude "eTGS" just because it has "bus" letters)
+            if any(bus in name for bus in bus_indicators):
+                return True
+            # Check source URL
+            if '/bus/' in source_url or '/lion-city' in source_url:
+                return True
+            # Check configurations
+            if configs and any('bus' in str(c).lower() for c in configs if c):
+                return True
+
+        return False
 
     def extract_all_vehicles_sync(self, starting_url: str) -> Dict[str, Any]:
         """Synchronous wrapper for extract_all_vehicles"""
@@ -615,6 +862,7 @@ CRITICAL RULES:
 4. For ranges like "500-750 km", use range_km=750, range_min_km=500
 5. Always look for motor power/torque - check for "kW", "PS", "hp", "Nm" values
 6. Return ONLY valid JSON, no markdown or explanations
+7. Use EXACT field names as shown above (gvw_kg NOT gvwr_kg, etc.)
 """
 
 
@@ -870,7 +1118,8 @@ class SpecificationParser:
                     'range_min_km': v.get('range_min_km'),
                     'dc_charging_kw': v.get('dc_charging_kw'),
                     'charging_time_minutes': v.get('charging_time_minutes'),
-                    'gvw_kg': self._ensure_kg(v.get('gvw_kg')),
+                    # Handle both gvw_kg and gvwr_kg (LLM sometimes returns either)
+                    'gvw_kg': self._ensure_kg(v.get('gvw_kg') or v.get('gvwr_kg')),
                     'payload_capacity_kg': self._ensure_kg(v.get('payload_capacity_kg')),
                     'powertrain_type': v.get('powertrain_type', 'BEV'),
 
@@ -964,44 +1213,64 @@ class SpecificationParser:
 
 class EPowertrainExtractor:
     """
-    Main extractor class with two modes:
+    Main extractor class with intelligent auto-fallback:
 
-    1. INTELLIGENT MODE (default): Three-phase LLM-guided extraction
+    1. FAST MODE (single page): Quick extraction from a single URL
+       - Best for pages with all specs visible
+       - Lower latency
+
+    2. DEEP MODE (multi-page): Three-phase LLM-guided extraction
        - Discovers spec page links using LLM
        - Crawls up to 5 relevant pages
        - Extracts specs using Pydantic schema + LLM
 
-    2. LEGACY MODE: Two-stage Crawl4AI + Perplexity
-       - Single page fetch with Crawl4AI
-       - Extract specs with Perplexity API
+    3. AUTO-FALLBACK: Starts with fast mode, falls back to deep if:
+       - No vehicles extracted
+       - Average completeness below threshold
+       - Too many vehicles with zero data
 
     This guarantees all data comes from the source URL.
     """
 
-    def __init__(self, use_intelligent_mode: bool = None):
-        # Determine mode
+    def __init__(self, use_intelligent_mode: bool = None, auto_fallback: bool = None):
+        # Determine initial mode
         if use_intelligent_mode is None:
             use_intelligent_mode = ScraperConfig.ENABLE_INTELLIGENT_NAVIGATION
         self.use_intelligent_mode = use_intelligent_mode
+
+        # Auto-fallback setting
+        if auto_fallback is None:
+            auto_fallback = ScraperConfig.AUTO_FALLBACK_ENABLED
+        self.auto_fallback = auto_fallback
 
         # Check for required API keys
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.perplexity_api_key = os.getenv("PERPLEXITY_API_KEY")
 
-        if self.use_intelligent_mode:
-            if not self.openai_api_key:
-                raise ValueError("OPENAI_API_KEY must be set for intelligent mode")
-            self.intelligent_scraper = IntelligentScraper(self.openai_api_key)
-        else:
-            if not self.perplexity_api_key:
-                raise ValueError("PERPLEXITY_API_KEY must be set for legacy mode")
+        # Initialize perplexity mode components (for fallback capability)
+        self.parser = SpecificationParser()
+        self.content_fetcher = WebContentFetcher()
+
+        if self.perplexity_api_key:
             self.perplexity_api_key = self.perplexity_api_key.strip('"\'')
             self.headers = {
                 "Authorization": f"Bearer {self.perplexity_api_key}",
                 "Content-Type": "application/json"
             }
-            self.parser = SpecificationParser()
-            self.content_fetcher = WebContentFetcher()
+        else:
+            self.headers = None
+
+        # Initialize intelligent mode components (for fallback capability)
+        if self.openai_api_key:
+            self.intelligent_scraper = IntelligentScraper(self.openai_api_key)
+        else:
+            self.intelligent_scraper = None
+
+        # Validate we have at least one mode available
+        if self.use_intelligent_mode and not self.intelligent_scraper:
+            raise ValueError("OPENAI_API_KEY must be set for intelligent mode")
+        if not self.use_intelligent_mode and not self.perplexity_api_key:
+            raise ValueError("PERPLEXITY_API_KEY must be set for perplexity mode")
 
     def _extract_domain(self, url: str) -> str:
         """Extract domain from URL"""
@@ -1036,13 +1305,97 @@ class EPowertrainExtractor:
         except Exception as e:
             return {'error': str(e)}
 
+    def _check_data_quality(self, result: Dict) -> tuple:
+        """
+        Check if extraction result has sufficient data quality.
+
+        Returns:
+            (is_sufficient: bool, reason: str)
+        """
+        vehicles = result.get('vehicles', [])
+
+        # Check 1: No vehicles at all
+        if not vehicles:
+            return False, "No vehicles extracted"
+
+        # Check 2: Calculate average completeness
+        completeness_scores = [v.get('data_completeness_score', 0) for v in vehicles]
+        avg_completeness = sum(completeness_scores) / len(completeness_scores)
+
+        if avg_completeness < ScraperConfig.MIN_COMPLETENESS_THRESHOLD:
+            return False, f"Low avg completeness: {avg_completeness:.2f} < {ScraperConfig.MIN_COMPLETENESS_THRESHOLD}"
+
+        # Check 3: Vehicles with at least some data
+        vehicles_with_data = sum(1 for score in completeness_scores if score > 0)
+        data_ratio = vehicles_with_data / len(vehicles)
+
+        if data_ratio < ScraperConfig.MIN_VEHICLES_WITH_DATA:
+            return False, f"Too few vehicles with data: {vehicles_with_data}/{len(vehicles)} ({data_ratio:.0%})"
+
+        return True, f"Quality OK: {avg_completeness:.2f} avg, {vehicles_with_data}/{len(vehicles)} with data"
+
+    def _merge_results(self, perplexity_result: Dict, intelligent_result: Dict) -> Dict:
+        """
+        Merge results from perplexity and intelligent modes.
+        Keeps vehicles with best completeness scores.
+        """
+        merged_vehicles = {}
+
+        # Add perplexity vehicles
+        for v in perplexity_result.get('vehicles', []):
+            name = v.get('vehicle_name', '').lower().strip()
+            if name:
+                merged_vehicles[name] = v
+
+        # Add/update with intelligent vehicles (keep best completeness)
+        for v in intelligent_result.get('vehicles', []):
+            name = v.get('vehicle_name', '').lower().strip()
+            if name:
+                existing = merged_vehicles.get(name)
+                if not existing or v.get('data_completeness_score', 0) > existing.get('data_completeness_score', 0):
+                    merged_vehicles[name] = v
+
+        vehicles = list(merged_vehicles.values())
+
+        # Create merged result
+        return {
+            'oem_name': intelligent_result.get('oem_name') or perplexity_result.get('oem_name'),
+            'oem_url': intelligent_result.get('oem_url') or perplexity_result.get('oem_url'),
+            'vehicles': vehicles,
+            'total_vehicles_found': len(vehicles),
+            'extraction_timestamp': datetime.now().isoformat(),
+            'official_citations': list(set(
+                perplexity_result.get('official_citations', []) +
+                intelligent_result.get('spec_urls_found', [])
+            )),
+            'third_party_citations': [],
+            'source_compliance_score': 1.0,
+            'raw_content': f"Merged: Fast + Deep mode ({intelligent_result.get('pages_crawled', 0)} pages)",
+            'pages_crawled': intelligent_result.get('pages_crawled', 1),
+            'spec_urls_found': intelligent_result.get('spec_urls_found', []),
+            'extraction_details': intelligent_result.get('extraction_details', []),
+            'fetched_content_length': perplexity_result.get('fetched_content_length', 0),
+            'tokens_used': perplexity_result.get('tokens_used', 0),
+            'model_used': 'perplexity+intelligent',
+            'extraction_duration_seconds': (
+                perplexity_result.get('extraction_duration_seconds', 0) +
+                intelligent_result.get('extraction_duration_seconds', 0)
+            ),
+            'errors': [],
+            'warnings': ['Auto-fallback to intelligent mode was triggered'],
+        }
+
     def extract_oem_data(self, url: str) -> Dict:
         """
-        Extract OEM data from URL.
+        Extract OEM data from URL with intelligent auto-fallback.
 
-        Uses either:
-        - Intelligent Mode: Three-phase LLM navigation + extraction
-        - Legacy Mode: Two-stage Crawl4AI + Perplexity
+        Strategy:
+        1. If intelligent mode requested: use intelligent mode directly
+        2. If perplexity mode requested with auto-fallback:
+           a. Try perplexity first (fast)
+           b. Check data quality
+           c. If insufficient, fallback to intelligent mode
+           d. Merge results from both modes
 
         Returns ScrapingResult compatible with LangGraph workflow.
         """
@@ -1050,21 +1403,59 @@ class EPowertrainExtractor:
         domain = self._extract_domain(url)
         oem_name = self._extract_oem_name(domain, '')
 
+        # Direct intelligent mode (no fallback needed)
         if self.use_intelligent_mode:
             return self._extract_intelligent(url, oem_name, start_time)
-        else:
-            return self._extract_legacy(url, oem_name, domain, start_time)
+
+        # Perplexity mode with optional auto-fallback
+        perplexity_result = self._extract_legacy(url, oem_name, domain, start_time)
+
+        # Check if auto-fallback is enabled and intelligent mode is available
+        if not self.auto_fallback or not self.intelligent_scraper:
+            return perplexity_result
+
+        # Check data quality
+        is_sufficient, quality_reason = self._check_data_quality(perplexity_result)
+
+        if is_sufficient:
+            print(f"[Auto-Fallback] {quality_reason} - No fallback needed")
+            return perplexity_result
+
+        # Trigger fallback to intelligent mode
+        print(f"\n[Auto-Fallback] {quality_reason}")
+        print(f"[Auto-Fallback] Switching to MULTI-PAGE MODE for better extraction...")
+
+        intelligent_start = time.time()
+        intelligent_result = self._extract_intelligent(url, oem_name, intelligent_start)
+
+        # Merge results from both modes
+        merged_result = self._merge_results(perplexity_result, intelligent_result)
+
+        # Log improvement
+        perplexity_count = len(perplexity_result.get('vehicles', []))
+        intelligent_count = len(intelligent_result.get('vehicles', []))
+        merged_count = len(merged_result.get('vehicles', []))
+
+        perplexity_avg = sum(v.get('data_completeness_score', 0) for v in perplexity_result.get('vehicles', [])) / max(perplexity_count, 1)
+        merged_avg = sum(v.get('data_completeness_score', 0) for v in merged_result.get('vehicles', [])) / max(merged_count, 1)
+
+        print(f"[Auto-Fallback] Results:")
+        print(f"  Fast mode: {perplexity_count} vehicles, {perplexity_avg:.0%} avg completeness")
+        print(f"  Deep mode: {intelligent_count} vehicles")
+        print(f"  Merged: {merged_count} vehicles, {merged_avg:.0%} avg completeness")
+
+        return merged_result
 
     def _extract_intelligent(self, url: str, oem_name: str, start_time: float) -> Dict:
         """
-        INTELLIGENT MODE: Three-phase LLM-guided extraction.
+        MULTI-PAGE MODE: Three-phase LLM-guided extraction.
 
         Phase 1: Discover spec page links
         Phase 2: Crawl up to 5 spec pages
         Phase 3: Extract structured specs with LLM + Pydantic
         """
         print(f"\n{'='*60}")
-        print(f"INTELLIGENT MODE - {oem_name}")
+        print(f"MULTI-PAGE MODE - {oem_name}")
         print(f"{'='*60}")
 
         try:
@@ -1110,13 +1501,13 @@ class EPowertrainExtractor:
 
     def _extract_legacy(self, url: str, oem_name: str, domain: str, start_time: float) -> Dict:
         """
-        LEGACY MODE: Two-stage Crawl4AI + Perplexity extraction.
+        SINGLE PAGE MODE: Two-stage Crawl4AI + LLM extraction.
 
         Stage 1: Fetch webpage content with Crawl4AI
-        Stage 2: Extract structured specs with Perplexity
+        Stage 2: Extract structured specs with LLM
         """
         print(f"\n{'='*60}")
-        print(f"LEGACY MODE - {oem_name}")
+        print(f"SINGLE PAGE MODE - {oem_name}")
         print(f"{'='*60}")
 
         # ===== STAGE 1: Fetch webpage content with Crawl4AI =====
@@ -1147,8 +1538,8 @@ class EPowertrainExtractor:
         if len(raw_markdown) > ScraperConfig.MAX_CONTENT_LENGTH:
             print(f"[Stage 1] Truncated content from {len(raw_markdown)} to {ScraperConfig.MAX_CONTENT_LENGTH} chars")
 
-        # ===== STAGE 2: Extract structured data with Perplexity (JSON format) =====
-        print(f"[Stage 2] Extracting specifications with Perplexity (JSON mode)...")
+        # ===== STAGE 2: Extract structured data with LLM (JSON format) =====
+        print(f"[Stage 2] Extracting specifications...")
 
         # Use the improved JSON prompt for better extraction
         query = PERPLEXITY_JSON_PROMPT.format(
@@ -1163,7 +1554,7 @@ class EPowertrainExtractor:
             print(f"[Stage 2] FAILED: {result['error']}")
             return self._create_error_result(url, domain, result['error'], start_time)
 
-        print(f"[Stage 2] SUCCESS: Got response from Perplexity")
+        print(f"[Stage 2] SUCCESS: Extraction complete")
 
         # Parse JSON response (with fallback to markdown)
         vehicles = self.parser.parse_json_response(result['content'], oem_name, url)

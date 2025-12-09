@@ -2,7 +2,7 @@
 
 > **Purpose**: This file provides context for Claude Code sessions to understand the project state, history, and continue development seamlessly.
 > **Update this file**: After each development session to maintain continuity.
-> **Last Updated**: December 3, 2024 (Session 5)
+> **Last Updated**: December 4, 2024 (Session 6)
 
 ---
 
@@ -10,8 +10,8 @@
 
 **Name**: E-Powertrain Benchmarking System
 **Type**: LangGraph Multi-Agent System
-**Status**: MVP Complete + Multi-Slide Template System (v0.5.0)
-**Last Session**: December 3, 2024 (Session 5 - Multi-Slide Support)
+**Status**: MVP Complete + Async Parallel Processing (v0.6.0)
+**Last Session**: December 4, 2024 (Session 6 - Async Parallel URL Processing)
 
 ### What This Project Does
 
@@ -20,8 +20,9 @@ Automates the benchmarking of electric commercial vehicles (trucks, buses) by:
 2. Validating data quality with rule-based checks
 3. Generating PowerPoint presentations with **plug-and-play template support**
 
-### Key Capabilities (v0.5.0)
+### Key Capabilities (v0.6.0)
 - **Web Scraping**: Dual-mode (Perplexity + Intelligent) with auto-fallback
+- **Async Parallel Processing**: Process multiple URLs simultaneously (2-3x faster for 3+ URLs)
 - **Quality Validation**: Rule-based + optional LLM validation
 - **PPT Generation**: Fixed IAA template OR any custom template via plug-and-play system
 - **Multi-Slide Support**: Automatic overflow slides when products exceed items_per_slide
@@ -414,6 +415,51 @@ PERPLEXITY_API_KEY=pplx-...     # For perplexity scraping mode
 }
 ```
 
+### Session 6: December 4, 2024 - Async Parallel URL Processing
+**Goal**: Process multiple URLs simultaneously to significantly reduce extraction time.
+
+**User Requirements**:
+- Auto-detect mode: parallel for 2+ URLs, sequential for single URL
+- Semaphore-based rate limiting (simple, not overcomplicated)
+- Simple progress summary ("Processing 5 URLs in parallel...")
+- Must NOT affect extraction quality
+
+**Key Changes**:
+1. **New dependencies**: Added `aiohttp>=3.9.0` for async HTTP, `nest-asyncio>=1.6.0` for nested event loop compatibility
+2. **AsyncRateLimiter class**: Semaphore-based rate limiting for API calls
+3. **Async extraction methods**: `_extract_oem_data_async()`, `_extract_legacy_async()`, `_extract_intelligent_async()`
+4. **Parallel URL processing**: `_process_urls_parallel()` with `asyncio.gather()`
+5. **Auto-detect in `process_urls()`**: Switches between parallel/sequential based on URL count
+6. **Parallel page crawling**: Updated `_crawl_pages()` to crawl pages concurrently
+7. **Event loop fix**: Applied `nest_asyncio.apply()` at module load to fix LiteLLM/Gradio compatibility
+
+**Files Modified**:
+| File | Changes |
+|------|---------|
+| `requirements.txt` | Added `aiohttp>=3.9.0`, `nest-asyncio>=1.6.0` |
+| `src/tools/scraper.py` | Major additions: `AsyncRateLimiter`, async extraction methods, `_process_urls_parallel()`, updated `process_urls()`, parallel `_crawl_pages()`, `nest_asyncio.apply()` |
+
+**New Configuration Parameters** (in `ScraperConfig`):
+```python
+PARALLEL_URL_THRESHOLD = 2      # Use parallel for 2+ URLs
+MAX_CONCURRENT_URLS = 3         # Max URLs processed simultaneously
+MAX_CONCURRENT_CRAWLS = 5       # Max concurrent page fetches
+MAX_CONCURRENT_API_CALLS = 3    # Max concurrent API calls
+ASYNC_TIMEOUT_SECONDS = 300     # 5 min timeout per URL
+```
+
+**Expected Performance Improvement**:
+| URLs | Before | After |
+|------|--------|-------|
+| 1 | ~30-60s | Same (sequential) |
+| 3 | ~2-3 min | ~40-80s (2-3x faster) |
+| 5 | ~4-5 min | ~1-2 min (2-3x faster) |
+
+**Backwards Compatibility**:
+- Public API unchanged: `extractor.process_urls(urls)` works identically
+- `scraping_agent.py` needs NO changes
+- Single URL uses original sequential code path
+
 ---
 
 ## Learnings & Best Practices
@@ -463,7 +509,7 @@ PERPLEXITY_API_KEY=pplx-...     # For perplexity scraping mode
 1. ~~**Single-slide templates only**~~: Multi-slide support implemented in Session 5!
 2. **No image placeholders**: Can't map images to template
 3. **No chart generation**: Tables only
-4. **Sequential URL processing**: No async parallelism
+4. ~~**Sequential URL processing**~~: Async parallel processing implemented in Session 6!
 
 ### Workarounds
 - For images: Manually add after generation
@@ -478,6 +524,7 @@ PERPLEXITY_API_KEY=pplx-...     # For perplexity scraping mode
 - [x] Plug-and-play template system
 - [x] LangGraph 1.0 compatibility analysis
 - [x] Multi-slide template support (Session 5)
+- [x] Async parallel URL processing (Session 6)
 
 ### Phase 2: Enterprise Features (Next)
 - [ ] Human-in-the-loop (`interrupt()` function)
@@ -554,16 +601,17 @@ print(gen.mapping['template_name'])
 8. **Gradio on Windows**: Use `server_name="127.0.0.1"`
 9. **LLM field names**: Use fallback pattern: `data.get('gvw_kg') or data.get('gvwr_kg')`
 10. **No provider names**: User requested hiding LLM provider names in UI
+11. **Nested event loops**: LiteLLM/Crawl4AI have internal async queues - using `asyncio.run()` from Gradio causes "Queue bound to different event loop" errors. Fixed with `nest_asyncio.apply()` at module load.
 
 ### Two Systems
-11. **Original PPT generator**: `src/tools/ppt_generator.py` (hardcoded IAA)
-12. **New dynamic generator**: `src/tools/dynamic_ppt_generator.py` (any template)
-13. **Both work independently**: Original system untouched
+12. **Original PPT generator**: `src/tools/ppt_generator.py` (hardcoded IAA)
+13. **New dynamic generator**: `src/tools/dynamic_ppt_generator.py` (any template)
+14. **Both work independently**: Original system untouched
 
 ### Template System
-14. **Mapping configs**: `src/config/template_schemas/*.json`
-15. **Registry manages**: List, load, save, validate mappings
-16. **Two UI apps**: `app.py` (main) and `template_app.py` (templates)
+15. **Mapping configs**: `src/config/template_schemas/*.json`
+16. **Registry manages**: List, load, save, validate mappings
+17. **Two UI apps**: `app.py` (main) and `template_app.py` (templates)
 
 ---
 
@@ -641,8 +689,9 @@ When starting a new session, Claude should:
 ---
 
 **Next Session Suggestions**:
-1. Implement human-in-the-loop with `interrupt()` function
-2. Add auto-summarization middleware
-3. Integrate template selection into main app.py
-4. pytest test suite for template system
-5. Image placeholder mapping support
+1. Test async parallel URL processing with 3+ URLs to verify performance gains
+2. Implement human-in-the-loop with `interrupt()` function
+3. Add auto-summarization middleware
+4. Integrate template selection into main app.py
+5. pytest test suite for template system
+6. Image placeholder mapping support

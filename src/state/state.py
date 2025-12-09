@@ -61,28 +61,39 @@ class VehicleSpecifications(TypedDict, total=False):
     powertrain_type: Optional[str]
     source_url: str
 
-    # Battery
-    battery_capacity_kwh: Optional[float]
-    battery_capacity_min_kwh: Optional[float]  # NEW: Min for ranges like "240-560 kWh"
-    battery_voltage_v: Optional[float]
+    # Battery (capture ranges: e.g., "240-560 kWh", "600-800V")
+    battery_capacity_kwh: Optional[float]  # Max value
+    battery_capacity_min_kwh: Optional[float]  # Min value for ranges
+    battery_voltage_v: Optional[float]  # Max value
+    battery_voltage_min_v: Optional[float]  # Min value for ranges like "600-800V"
     battery_chemistry: Optional[str]  # e.g., "NMC", "LFP"
 
-    # Motor
-    motor_power_kw: Optional[float]
-    motor_torque_nm: Optional[float]
+    # Motor (capture ranges: e.g., "300-400 kW")
+    motor_power_kw: Optional[float]  # Max value
+    motor_power_min_kw: Optional[float]  # Min value for ranges
+    motor_torque_nm: Optional[float]  # Max value
+    motor_torque_min_nm: Optional[float]  # Min value for ranges
 
-    # Range
-    range_km: Optional[float]
-    range_min_km: Optional[float]  # NEW: Min for ranges like "500-750 km"
+    # Range (capture ranges: e.g., "500-750 km")
+    range_km: Optional[float]  # Max value
+    range_min_km: Optional[float]  # Min value for ranges
     energy_consumption_kwh_per_100km: Optional[float]
 
-    # Charging
-    dc_charging_kw: Optional[float]
-    charging_time_minutes: Optional[Dict[str, float]]
+    # Charging (capture ranges: e.g., "150-375 kW")
+    dc_charging_kw: Optional[float]  # CCS charging power (max)
+    dc_charging_min_kw: Optional[float]  # CCS charging power (min for ranges)
+    mcs_charging_kw: Optional[float]  # MCS (Megawatt Charging System) power (max)
+    mcs_charging_min_kw: Optional[float]  # MCS power (min for ranges)
+    charging_time_minutes: Optional[float]  # Charging time (min value if range)
+    charging_time_max_minutes: Optional[float]  # Charging time (max value if range)
 
-    # Vehicle
-    gvw_kg: Optional[float]
-    payload_capacity_kg: Optional[float]
+    # Vehicle (capture ranges: e.g., "18-20 tons")
+    gvw_kg: Optional[float]  # Gross Vehicle Weight max
+    gvw_min_kg: Optional[float]  # GVW min for ranges
+    gcw_kg: Optional[float]  # Gross Combination Weight max
+    gcw_min_kg: Optional[float]  # GCW min for ranges
+    payload_capacity_kg: Optional[float]  # Payload max
+    payload_capacity_min_kg: Optional[float]  # Payload min for ranges
     available_configurations: Optional[List[str]]  # NEW: e.g., ["4x2", "6x2"]
 
     # FLEXIBLE fields

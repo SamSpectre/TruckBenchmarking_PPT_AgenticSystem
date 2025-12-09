@@ -17,11 +17,16 @@ import os
 import re
 import time
 import asyncio
+import aiohttp
+import nest_asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Set
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from dotenv import load_dotenv
+
+# Note: nest_asyncio.apply() is called in process_urls() to avoid
+# conflicts with Gradio/uvicorn at module import time
 
 # Pydantic for schema-based extraction
 from pydantic import BaseModel, Field
@@ -48,7 +53,7 @@ class ScraperConfig:
 
     # Intelligent Navigation Settings
     MAX_PAGES_PER_OEM = 12  # Maximum pages to crawl per OEM (increased for better coverage)
-    LLM_EXTRACTION_MODEL = "openai/gpt-4o-mini"  # Fast & cheap LLM for extraction
+    LLM_EXTRACTION_MODEL = "openai/gpt-4o"  # Supports temperature=0 for deterministic extraction
     ENABLE_INTELLIGENT_NAVIGATION = True  # Use LLM-guided navigation
 
     # Auto-Fallback Settings
@@ -59,6 +64,13 @@ class ScraperConfig:
 
     # Vehicle category filtering (for truck pages, exclude buses)
     VEHICLE_CATEGORY_FILTER = "truck"  # Set to None to include all, or "truck", "bus", etc.
+
+    # Async Parallel Processing Settings
+    PARALLEL_URL_THRESHOLD = 2      # Use parallel processing for 2+ URLs
+    MAX_CONCURRENT_URLS = 3         # Max URLs processed simultaneously
+    MAX_CONCURRENT_CRAWLS = 5       # Max concurrent Crawl4AI page fetches
+    MAX_CONCURRENT_API_CALLS = 3    # Max concurrent Perplexity/OpenAI API calls
+    ASYNC_TIMEOUT_SECONDS = 300     # 5 min timeout per URL extraction
 
 
 # =====================================================================
@@ -96,6 +108,49 @@ class SpecPageLink(BaseModel):
 class SpecPageLinks(BaseModel):
     """Links identified as leading to EV specification pages"""
     spec_links: List[SpecPageLink] = Field(default_factory=list)
+
+
+# =====================================================================
+# ASYNC RATE LIMITER (For Parallel Processing)
+# =====================================================================
+
+class AsyncRateLimiter:
+    """
+    Simple semaphore-based rate limiter for async operations.
+    Limits concurrent operations and optionally adds delay between releases.
+    """
+
+    def __init__(self, max_concurrent: int = 3, delay_seconds: float = 0.5):
+        """
+        Args:
+            max_concurrent: Maximum number of concurrent operations
+            delay_seconds: Minimum delay between successive operations
+        """
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.delay = delay_seconds
+        self._lock = asyncio.Lock()
+        self._last_release = 0.0
+
+    async def acquire(self):
+        """Acquire semaphore with optional delay between releases."""
+        await self.semaphore.acquire()
+        async with self._lock:
+            now = time.time()
+            if self._last_release > 0 and now - self._last_release < self.delay:
+                await asyncio.sleep(self.delay - (now - self._last_release))
+
+    def release(self):
+        """Release semaphore and track timing."""
+        self._last_release = time.time()
+        self.semaphore.release()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+        return False
 
 
 # =====================================================================
@@ -507,37 +562,47 @@ Prioritize individual model pages (eTGX, eTGS, eTGL separately) over generic ove
 
     async def _crawl_pages(self, urls: List[str]) -> List[tuple]:
         """
-        Phase 2: Crawl the discovered spec pages.
+        Phase 2: Crawl the discovered spec pages in parallel.
 
         Returns list of (url, markdown_content) tuples.
+        Uses semaphore-based rate limiting for concurrent crawls.
         """
-        results = []
-        crawled_urls = set()
+        # Deduplicate and limit URLs
+        unique_urls = list(dict.fromkeys(urls))[:self.max_pages]
+        if not unique_urls:
+            return []
 
-        for url in urls:
-            if url in crawled_urls:
-                continue
-            crawled_urls.add(url)
+        # Create semaphore for concurrent crawl limiting
+        crawl_semaphore = asyncio.Semaphore(ScraperConfig.MAX_CONCURRENT_CRAWLS)
 
-            try:
-                async with AsyncWebCrawler(config=self.browser_config) as crawler:
-                    result = await crawler.arun(
-                        url=url,
-                        config=CrawlerRunConfig(word_count_threshold=10)
-                    )
+        async def crawl_single_page(url: str) -> Optional[tuple]:
+            """Crawl a single page with rate limiting."""
+            async with crawl_semaphore:
+                try:
+                    async with AsyncWebCrawler(config=self.browser_config) as crawler:
+                        result = await crawler.arun(
+                            url=url,
+                            config=CrawlerRunConfig(word_count_threshold=10)
+                        )
 
-                if result.success:
-                    markdown_content = str(result.markdown) if result.markdown else ''
-                    if len(markdown_content) > 100:  # Only include pages with content
-                        results.append((url, markdown_content))
+                    if result.success:
+                        markdown_content = str(result.markdown) if result.markdown else ''
+                        if len(markdown_content) > 100:
+                            return (url, markdown_content)
+                    return None
+                except Exception as e:
+                    print(f"  [Phase 2] Error crawling {url}: {e}")
+                    return None
 
-            except Exception as e:
-                print(f"  [Phase 2] Error crawling {url}: {e}")
+        # Crawl all pages in parallel
+        tasks = [crawl_single_page(url) for url in unique_urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            if len(results) >= self.max_pages:
-                break
+        # Filter out None results and exceptions
+        valid_results = [r for r in results if isinstance(r, tuple)]
+        print(f"  [Phase 2] Successfully crawled {len(valid_results)}/{len(unique_urls)} pages")
 
-        return results
+        return valid_results
 
     def _ensure_kg_weight(self, value: Optional[float]) -> Optional[float]:
         """Convert weight to kg if it looks like it's in tons"""
@@ -576,25 +641,63 @@ WEBPAGE CONTENT:
 **CRITICAL: Only extract data that is EXPLICITLY stated in the content above!**
 
 LOOK FOR these data sources in the content:
-1. Technical specification tables (rows with "Battery", "Range", "Power", "GVW")
+1. Technical specification tables (rows with "Battery", "Range", "Power", "GVW", "GCW")
 2. Key facts or highlights sections with numbers
 3. Product comparison tables with specs
 4. Spec sheets or data sheets
+5. **MOTOR POWER**: Look for "kW", "continuous power", "drive output", "motor output", "peak power"
 
-For EACH electric TRUCK found (NOT buses), extract:
+For EACH electric TRUCK found (NOT buses), extract ALL values exactly as shown on the website.
+**CRITICAL: For ANY range (e.g., "600-800V", "320-480 kWh"), capture BOTH min and max values!**
+
 - vehicle_name: Full model name with variant (e.g., "MAN eTGX 4x2 semitrailer", "MAN eTGS 6x2")
-- battery_capacity_kwh: Battery in kWh (use MAX if range given, e.g., "320-480 kWh" -> 480)
-- battery_capacity_min_kwh: MIN battery if range given (e.g., "320-480 kWh" -> 320)
-- motor_power_kw: Motor power in kW (convert: 1 PS = 0.735 kW, 1 hp = 0.746 kW)
-- motor_torque_nm: Torque in Nm
-- range_km: Driving range in km (use MAX if range, e.g., "500-750 km" -> 750)
-- range_min_km: MIN range if given (e.g., "500-750 km" -> 500)
-- dc_charging_kw: DC charging power in kW (CCS, MCS, Megawatt)
-- charging_time_minutes: Charging time (to 80%)
-- gvw_kg: Gross Vehicle Weight in KG (CONVERT: 28t/28 tons = 28000 kg, NOT 28!)
-- payload_capacity_kg: Payload in kg
+
+BATTERY:
+- battery_capacity_kwh: MAX battery (e.g., "320-480 kWh" -> 480)
+- battery_capacity_min_kwh: MIN battery (e.g., "320-480 kWh" -> 320)
+- battery_voltage_v: MAX voltage (e.g., "600-800V" -> 800)
+- battery_voltage_min_v: MIN voltage (e.g., "600-800V" -> 600)
+
+MOTOR:
+- motor_power_kw: MAX motor power in kW (convert: 1 PS = 0.735 kW, 1 hp = 0.746 kW)
+- motor_power_min_kw: MIN motor power if range given
+- motor_torque_nm: MAX torque in Nm
+- motor_torque_min_nm: MIN torque if range given
+
+RANGE:
+- range_km: MAX driving range (e.g., "500-750 km" -> 750)
+- range_min_km: MIN driving range (e.g., "500-750 km" -> 500)
+
+CHARGING:
+- dc_charging_kw: MAX CCS charging power (e.g., "150-375 kW" -> 375)
+- dc_charging_min_kw: MIN CCS charging power (e.g., "150-375 kW" -> 150)
+- mcs_charging_kw: MAX MCS (Megawatt) charging power
+- mcs_charging_min_kw: MIN MCS power if range given
+- charging_time_minutes: MIN charging time (e.g., "30-45 min" -> 30)
+- charging_time_max_minutes: MAX charging time (e.g., "30-45 min" -> 45)
+
+WEIGHT (convert tons to kg: 28t = 28000 kg):
+- gvw_kg: MAX Gross Vehicle Weight (single vehicle)
+- gvw_min_kg: MIN GVW if range given
+- gcw_kg: MAX Gross Combination Weight (with trailer)
+- gcw_min_kg: MIN GCW if range given
+- payload_capacity_kg: MAX payload
+- payload_capacity_min_kg: MIN payload if range given
+
+OTHER:
 - powertrain_type: "BEV" | "FCEV" | "PHEV"
 - available_configurations: Array like ["4x2", "6x2"]
+
+**CRITICAL WEIGHT DISTINCTION - GVW vs GCW:**
+- GVW (Gross Vehicle Weight): Weight of the truck ALONE (e.g., chassis = 20t, 28t)
+- GCW (Gross Combination Weight): Weight of truck + trailer combined (e.g., semitrailer = 40-44t)
+- For SEMITRAILER tractors: GCW is usually 40-44 tons, GVW is LOWER (the tractor weight)
+- If only one weight is given for a semitrailer config and it's 40-44t, it's likely GCW, NOT GVW!
+
+**CHARGING - CCS vs MCS:**
+- CCS (Combined Charging System): Standard DC fast charging, typically up to 350-400 kW
+- MCS (Megawatt Charging System): High-power charging for heavy trucks, 750+ kW
+- Extract BOTH if mentioned! They are different systems.
 
 **STRICT RULES - FOLLOW EXACTLY:**
 1. ONLY extract specs that appear in the content - NEVER invent or estimate values
@@ -603,23 +706,18 @@ For EACH electric TRUCK found (NOT buses), extract:
 4. WEIGHT: Always convert tons to kg (28t = 28000 kg, not 28)
 5. If same model has variants (4x2 vs 6x2), extract each as separate vehicle
 6. Each variant with different specs should be a separate entry
-7. If content mentions "up to X kWh", extract X as max value
-8. Use gvw_kg NOT gvwr_kg
-
-**VALIDATION - Common MAN truck specs for reference (do NOT use these if not in content):**
-- eTGX: 320-560 kWh battery, 500-750 km range
-- eTGS: 400-480 kWh battery
-- eTGL: ~160 kWh battery, ~235 km range
-If extracted values are wildly different (e.g., 600 kWh for eTGX), verify in content!
+7. If content mentions "up to X kW" for motor/charging, extract X as the MAX value
+8. MOTOR POWER is critical - search carefully for any mention of kW drive/motor output
+9. **RANGES ARE CRITICAL**: If website shows "600-800V", you MUST extract BOTH 600 and 800!
 
 Return ONLY valid JSON:
 {{"vehicles": [
-  {{"vehicle_name": "MAN eTGX 4x2 semitrailer", "battery_capacity_kwh": 480, "battery_capacity_min_kwh": 320, "range_km": 500, "gvw_kg": 44000, ...}},
+  {{"vehicle_name": "MAN eTGX 4x2 semitrailer", "battery_capacity_kwh": 480, "battery_capacity_min_kwh": 320, "battery_voltage_v": 800, "battery_voltage_min_v": 600, "range_km": 500, "motor_power_kw": 400, "dc_charging_kw": 375, "mcs_charging_kw": 750, "gvw_kg": null, "gcw_kg": 44000, ...}},
   ...
 ]}}"""
 
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": """You are a precise technical data extraction expert for commercial vehicle specifications.
 
@@ -628,13 +726,27 @@ CRITICAL RULES:
 2. NEVER hallucinate, estimate, or infer values not directly stated
 3. Use null for any specification not found in the content
 4. Convert tons to kg (multiply by 1000)
-5. For ranges (e.g., "320-480 kWh"), extract both min and max values
-6. Exclude buses - extract trucks only
+5. Exclude buses - extract trucks only
+
+**RANGES ARE CRITICAL - CAPTURE ALL VALUES:**
+- If website shows "600-800V", extract BOTH: battery_voltage_v=800, battery_voltage_min_v=600
+- If website shows "320-480 kWh", extract BOTH: battery_capacity_kwh=480, battery_capacity_min_kwh=320
+- If website shows "300-400 kW", extract BOTH: motor_power_kw=400, motor_power_min_kw=300
+- NEVER ignore the minimum value in a range!
+
+WEIGHT DISTINCTION (VERY IMPORTANT):
+- GVW = Gross Vehicle Weight = weight of truck ALONE (chassis trucks: 20t, 28t)
+- GCW = Gross Combination Weight = truck + trailer (semitrailers: 40-44t)
+- For semitrailer tractors, 44 tons is GCW, NOT GVW!
+
+MOTOR POWER: Actively search for "kW", "continuous output", "drive power" - this is critical data!
+
+CHARGING: CCS (up to ~400kW) and MCS (750kW+) are DIFFERENT systems - extract both if mentioned.
 
 Your accuracy is critical for automotive benchmarking. Wrong data is worse than missing data."""},
                     {"role": "user", "content": extraction_prompt}
                 ],
-                temperature=0.0,  # Zero temperature for maximum determinism
+                temperature=0.0,  # Zero temperature for deterministic extraction
                 response_format={"type": "json_object"}
             )
 
@@ -644,24 +756,44 @@ Your accuracy is critical for automotive benchmarking. Wrong data is worse than 
             vehicles_data = extracted.get('vehicles', [])
             vehicles = []
             for v in vehicles_data:
-                # Get GVW with fallback for both field names
+                # Get GVW and GCW with fallback for alternative field names
                 gvw_raw = v.get('gvw_kg') or v.get('gvwr_kg')
+                gvw_min_raw = v.get('gvw_min_kg') or v.get('gvwr_min_kg')
+                gcw_raw = v.get('gcw_kg') or v.get('gcwr_kg')
+                gcw_min_raw = v.get('gcw_min_kg') or v.get('gcwr_min_kg')
 
                 vehicle_dict = {
                     'vehicle_name': v.get('vehicle_name', 'Unknown'),
                     'source_url': url,
                     'extraction_timestamp': datetime.now().isoformat(),
+                    # Battery (with ranges)
                     'battery_capacity_kwh': v.get('battery_capacity_kwh'),
                     'battery_capacity_min_kwh': v.get('battery_capacity_min_kwh'),
                     'battery_voltage_v': v.get('battery_voltage_v'),
+                    'battery_voltage_min_v': v.get('battery_voltage_min_v'),
+                    # Motor (with ranges)
                     'motor_power_kw': v.get('motor_power_kw'),
+                    'motor_power_min_kw': v.get('motor_power_min_kw'),
                     'motor_torque_nm': v.get('motor_torque_nm'),
+                    'motor_torque_min_nm': v.get('motor_torque_min_nm'),
+                    # Range (with ranges)
                     'range_km': v.get('range_km'),
                     'range_min_km': v.get('range_min_km'),
+                    # Charging (with ranges)
                     'dc_charging_kw': v.get('dc_charging_kw'),
+                    'dc_charging_min_kw': v.get('dc_charging_min_kw'),
+                    'mcs_charging_kw': v.get('mcs_charging_kw'),
+                    'mcs_charging_min_kw': v.get('mcs_charging_min_kw'),
                     'charging_time_minutes': v.get('charging_time_minutes'),
+                    'charging_time_max_minutes': v.get('charging_time_max_minutes'),
+                    # Weight (with ranges, converted to kg)
                     'gvw_kg': self._ensure_kg_weight(gvw_raw),
+                    'gvw_min_kg': self._ensure_kg_weight(gvw_min_raw),
+                    'gcw_kg': self._ensure_kg_weight(gcw_raw),
+                    'gcw_min_kg': self._ensure_kg_weight(gcw_min_raw),
                     'payload_capacity_kg': self._ensure_kg_weight(v.get('payload_capacity_kg')),
+                    'payload_capacity_min_kg': self._ensure_kg_weight(v.get('payload_capacity_min_kg')),
+                    # Other
                     'powertrain_type': v.get('powertrain_type', 'BEV'),
                     'energy_consumption_kwh_100km': v.get('energy_consumption_kwh_100km'),
                     'available_configurations': v.get('available_configurations', []),
@@ -1305,6 +1437,62 @@ class EPowertrainExtractor:
         except Exception as e:
             return {'error': str(e)}
 
+    async def _query_perplexity_async(
+        self,
+        session: aiohttp.ClientSession,
+        query: str,
+        max_tokens: int = 8000,
+        rate_limiter: Optional[AsyncRateLimiter] = None
+    ) -> Dict:
+        """
+        Async version of Perplexity API query using aiohttp.
+
+        Args:
+            session: aiohttp ClientSession for connection pooling
+            query: The query to send to Perplexity
+            max_tokens: Maximum tokens for response
+            rate_limiter: Optional rate limiter for API call throttling
+        """
+        payload = {
+            "model": ScraperConfig.DEFAULT_MODEL,
+            "messages": [{"role": "user", "content": query}],
+            "max_tokens": max_tokens,
+            "temperature": ScraperConfig.TEMPERATURE,
+            "return_citations": False
+        }
+
+        try:
+            if rate_limiter:
+                async with rate_limiter:
+                    async with session.post(
+                        ScraperConfig.API_URL,
+                        headers=self.headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=120)
+                    ) as response:
+                        response.raise_for_status()
+                        result = await response.json()
+            else:
+                async with session.post(
+                    ScraperConfig.API_URL,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=120)
+                ) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+
+            return {
+                'content': result['choices'][0]['message']['content'],
+                'usage': result.get('usage', {}),
+            }
+        except asyncio.TimeoutError:
+            return {'error': 'Request timed out (120s)'}
+        except aiohttp.ClientError as e:
+            return {'error': f'HTTP error: {str(e)}'}
+        except Exception as e:
+            return {'error': str(e)}
+
     def _check_data_quality(self, result: Dict) -> tuple:
         """
         Check if extraction result has sufficient data quality.
@@ -1580,7 +1768,175 @@ class EPowertrainExtractor:
             'errors': [],
             'warnings': [],
         }
-    
+
+    # =====================================================================
+    # ASYNC EXTRACTION METHODS (For Parallel Processing)
+    # =====================================================================
+
+    async def _extract_intelligent_async(self, url: str, oem_name: str, start_time: float) -> Dict:
+        """
+        Async version of MULTI-PAGE MODE extraction.
+        Calls the IntelligentScraper's async method directly.
+        """
+        print(f"  [Async MULTI-PAGE] {oem_name}")
+
+        try:
+            # Call async method directly (not the sync wrapper)
+            result = await self.intelligent_scraper.extract_all_vehicles(url)
+
+            vehicles = result.get('vehicles', [])
+
+            for v in vehicles:
+                v['oem_name'] = oem_name
+                important_fields = ['battery_capacity_kwh', 'range_km', 'motor_power_kw', 'gvw_kg']
+                filled = sum(1 for f in important_fields if v.get(f))
+                v['data_completeness_score'] = filled / len(important_fields)
+
+            duration = time.time() - start_time
+
+            return {
+                'oem_name': oem_name,
+                'oem_url': url,
+                'vehicles': vehicles,
+                'total_vehicles_found': len(vehicles),
+                'extraction_timestamp': datetime.now().isoformat(),
+                'official_citations': result.get('spec_urls_found', [url]),
+                'third_party_citations': [],
+                'source_compliance_score': 1.0,
+                'raw_content': f"Intelligent extraction from {result.get('pages_crawled', 1)} pages",
+                'pages_crawled': result.get('pages_crawled', 1),
+                'spec_urls_found': result.get('spec_urls_found', [url]),
+                'extraction_details': result.get('extraction_details', []),
+                'fetched_content_length': 0,
+                'tokens_used': 0,
+                'model_used': ScraperConfig.LLM_EXTRACTION_MODEL,
+                'extraction_duration_seconds': round(duration, 2),
+                'errors': [],
+                'warnings': [],
+            }
+
+        except Exception as e:
+            print(f"  [Async MULTI-PAGE] ERROR: {e}")
+            return self._create_error_result(url, self._extract_domain(url), str(e), start_time)
+
+    async def _extract_legacy_async(
+        self,
+        url: str,
+        oem_name: str,
+        domain: str,
+        start_time: float,
+        session: aiohttp.ClientSession,
+        api_rate_limiter: AsyncRateLimiter
+    ) -> Dict:
+        """
+        Async version of SINGLE PAGE MODE extraction.
+        Uses async content fetch and async Perplexity API call.
+        """
+        print(f"  [Async SINGLE-PAGE] {oem_name}")
+
+        # Stage 1: Fetch webpage content with Crawl4AI (already async)
+        fetch_result = await self.content_fetcher.fetch_async(url)
+
+        if not fetch_result['success']:
+            return self._create_error_result(
+                url, domain,
+                f"Failed to fetch webpage: {fetch_result['error']}",
+                start_time
+            )
+
+        raw_markdown = fetch_result['markdown']
+
+        if len(raw_markdown) < 100:
+            return self._create_error_result(
+                url, domain,
+                "Webpage content too short - may be blocked or empty",
+                start_time
+            )
+
+        content_for_extraction = raw_markdown[:ScraperConfig.MAX_CONTENT_LENGTH]
+
+        # Stage 2: Extract with async Perplexity API call
+        query = PERPLEXITY_JSON_PROMPT.format(
+            url=url,
+            oem_name=oem_name,
+            content=content_for_extraction
+        )
+
+        result = await self._query_perplexity_async(session, query, rate_limiter=api_rate_limiter)
+
+        if 'error' in result:
+            return self._create_error_result(url, domain, result['error'], start_time)
+
+        vehicles = self.parser.parse_json_response(result['content'], oem_name, url)
+
+        duration = time.time() - start_time
+        usage = result.get('usage', {})
+
+        return {
+            'oem_name': oem_name,
+            'oem_url': url,
+            'vehicles': vehicles,
+            'total_vehicles_found': len(vehicles),
+            'extraction_timestamp': datetime.now().isoformat(),
+            'official_citations': [url],
+            'third_party_citations': [],
+            'source_compliance_score': 1.0,
+            'raw_content': result['content'],
+            'fetched_content_length': len(raw_markdown),
+            'tokens_used': usage.get('total_tokens', 0),
+            'model_used': ScraperConfig.DEFAULT_MODEL,
+            'extraction_duration_seconds': round(duration, 2),
+            'errors': [],
+            'warnings': [],
+        }
+
+    async def _extract_oem_data_async(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        url_semaphore: asyncio.Semaphore,
+        api_rate_limiter: AsyncRateLimiter
+    ) -> Dict:
+        """
+        Async version of extract_oem_data with semaphore rate limiting.
+        Handles both intelligent and legacy modes with auto-fallback.
+        """
+        async with url_semaphore:
+            start_time = time.time()
+            domain = self._extract_domain(url)
+            oem_name = self._extract_oem_name(domain, '')
+
+            print(f"[Async] Starting: {oem_name}")
+
+            try:
+                # Direct intelligent mode
+                if self.use_intelligent_mode:
+                    result = await self._extract_intelligent_async(url, oem_name, start_time)
+                else:
+                    # Perplexity mode with optional auto-fallback
+                    result = await self._extract_legacy_async(
+                        url, oem_name, domain, start_time, session, api_rate_limiter
+                    )
+
+                    # Check if auto-fallback should trigger
+                    if self.auto_fallback and self.intelligent_scraper:
+                        is_sufficient, quality_reason = self._check_data_quality(result)
+
+                        if not is_sufficient:
+                            print(f"  [Async Auto-Fallback] {quality_reason} - Trying MULTI-PAGE...")
+                            intelligent_result = await self._extract_intelligent_async(
+                                url, oem_name, time.time()
+                            )
+                            result = self._merge_results(result, intelligent_result)
+
+                vehicles_count = len(result.get('vehicles', []))
+                print(f"[Async] Done: {oem_name} ({vehicles_count} vehicles)")
+                return result
+
+            except Exception as e:
+                print(f"[Async] Error for {oem_name}: {e}")
+                return self._create_error_result(url, domain, str(e), start_time)
+
     def _extract_oem_name(self, domain: str, content: str) -> str:
         """Extract OEM name from domain or content"""
         # Known OEM domains
@@ -1627,55 +1983,35 @@ class EPowertrainExtractor:
     
     def process_urls(self, urls: List[str], output_dir: str = "outputs") -> List[Dict]:
         """
-        Process multiple URLs and return list of ScrapingResults.
-        Also saves to JSON files.
+        Process multiple URLs with auto-detection of optimal mode.
+
+        Uses parallel processing for 2+ URLs, sequential for single URL.
         """
+        # Apply nest_asyncio here (not at module import) to avoid
+        # conflicts with Gradio/uvicorn's event loop
+        nest_asyncio.apply()
+
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
-        all_results = []
-        
+
         print("=" * 60)
         print("E-POWERTRAIN SPECIFICATION EXTRACTOR")
         print("=" * 60)
         print(f"URLs to process: {len(urls)}")
-        
-        for i, url in enumerate(urls, 1):
-            print(f"\n{'='*20} OEM {i}/{len(urls)} {'='*20}")
-            
-            result = self.extract_oem_data(url)
-            all_results.append(result)
-            
-            # Print summary
-            print(f"OEM: {result['oem_name']}")
-            print(f"Vehicles found: {result['total_vehicles_found']}")
-            print(f"Official citations: {len(result['official_citations'])}")
-            print(f"Source score: {result['source_compliance_score']}")
-            
-            if result['vehicles']:
-                for v in result['vehicles']:
-                    print(f"  - {v['vehicle_name']}: {v.get('battery_capacity_kwh', 'N/A')} kWh, {v.get('range_km', 'N/A')} km")
-            
-            if result['errors']:
-                print(f"Errors: {result['errors']}")
-            
-            # Save individual result
-            safe_name = re.sub(r'[^\w\-]', '_', result['oem_name'])
-            output_path = Path(output_dir) / f"scraping_{safe_name}.json"
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2, ensure_ascii=False)
-            print(f"Saved to: {output_path}")
-            
-            # Wait between URLs
-            if i < len(urls):
-                print(f"\nWaiting {ScraperConfig.WAIT_BETWEEN_URLS}s before next URL...")
-                time.sleep(ScraperConfig.WAIT_BETWEEN_URLS)
-        
+
+        # Auto-detect processing mode
+        if len(urls) >= ScraperConfig.PARALLEL_URL_THRESHOLD:
+            print(f"Mode: PARALLEL (processing {len(urls)} URLs concurrently)")
+            all_results = asyncio.run(self._process_urls_parallel(urls, output_dir))
+        else:
+            print(f"Mode: SEQUENTIAL")
+            all_results = self._process_urls_sequential(urls, output_dir)
+
         # Save combined results
         combined_path = Path(output_dir) / "all_scraping_results.json"
         with open(combined_path, 'w', encoding='utf-8') as f:
             json.dump(all_results, f, indent=2, ensure_ascii=False)
         print(f"\nAll results saved to: {combined_path}")
-        
+
         # Summary
         print(f"\n{'='*60}")
         print("EXTRACTION COMPLETE")
@@ -1684,8 +2020,119 @@ class EPowertrainExtractor:
         total_vehicles = sum(r['total_vehicles_found'] for r in all_results)
         print(f"Successful: {successful}/{len(urls)}")
         print(f"Total vehicles: {total_vehicles}")
-        
+
         return all_results
+
+    def _process_urls_sequential(self, urls: List[str], output_dir: str) -> List[Dict]:
+        """
+        Process URLs sequentially (original behavior).
+        Used for single URL or when parallel mode is disabled.
+        """
+        all_results = []
+
+        for i, url in enumerate(urls, 1):
+            print(f"\n{'='*20} OEM {i}/{len(urls)} {'='*20}")
+
+            result = self.extract_oem_data(url)
+            all_results.append(result)
+
+            # Print summary
+            self._print_result_summary(result)
+
+            # Save individual result
+            self._save_individual_result(result, output_dir)
+
+            # Wait between URLs
+            if i < len(urls):
+                print(f"\nWaiting {ScraperConfig.WAIT_BETWEEN_URLS}s before next URL...")
+                time.sleep(ScraperConfig.WAIT_BETWEEN_URLS)
+
+        return all_results
+
+    async def _process_urls_parallel(self, urls: List[str], output_dir: str) -> List[Dict]:
+        """
+        Process multiple URLs in parallel with rate limiting.
+
+        Uses semaphore to limit concurrent URL processing and API calls.
+        """
+        start_time = time.time()
+
+        # Create rate limiters
+        url_semaphore = asyncio.Semaphore(ScraperConfig.MAX_CONCURRENT_URLS)
+        api_rate_limiter = AsyncRateLimiter(
+            max_concurrent=ScraperConfig.MAX_CONCURRENT_API_CALLS,
+            delay_seconds=0.5
+        )
+
+        # Create aiohttp session with connection pooling
+        connector = aiohttp.TCPConnector(
+            limit=10,
+            limit_per_host=3,
+            ttl_dns_cache=300
+        )
+        timeout = aiohttp.ClientTimeout(total=ScraperConfig.ASYNC_TIMEOUT_SECONDS)
+
+        print(f"\nProcessing {len(urls)} URLs in parallel...")
+        print(f"  Max concurrent URLs: {ScraperConfig.MAX_CONCURRENT_URLS}")
+        print(f"  Max concurrent API calls: {ScraperConfig.MAX_CONCURRENT_API_CALLS}")
+
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            tasks = [
+                self._extract_oem_data_async(url, session, url_semaphore, api_rate_limiter)
+                for url in urls
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Convert exceptions to error results and save individual files
+        all_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                error_result = self._create_error_result(
+                    urls[i],
+                    self._extract_domain(urls[i]),
+                    f"Parallel processing error: {str(result)}",
+                    start_time
+                )
+                all_results.append(error_result)
+            else:
+                all_results.append(result)
+
+            # Save individual result
+            self._save_individual_result(all_results[-1], output_dir)
+
+        # Print summaries
+        print(f"\n{'='*60}")
+        print("PARALLEL EXTRACTION RESULTS")
+        print(f"{'='*60}")
+        for result in all_results:
+            self._print_result_summary(result)
+
+        parallel_duration = time.time() - start_time
+        print(f"\nParallel processing completed in {parallel_duration:.1f}s")
+
+        return all_results
+
+    def _print_result_summary(self, result: Dict):
+        """Print summary for a single extraction result."""
+        print(f"\nOEM: {result['oem_name']}")
+        print(f"Vehicles found: {result['total_vehicles_found']}")
+        print(f"Official citations: {len(result['official_citations'])}")
+        print(f"Source score: {result['source_compliance_score']}")
+
+        if result['vehicles']:
+            for v in result['vehicles']:
+                print(f"  - {v['vehicle_name']}: {v.get('battery_capacity_kwh', 'N/A')} kWh, {v.get('range_km', 'N/A')} km")
+
+        if result['errors']:
+            print(f"Errors: {result['errors']}")
+
+    def _save_individual_result(self, result: Dict, output_dir: str):
+        """Save individual OEM result to JSON file."""
+        safe_name = re.sub(r'[^\w\-]', '_', result['oem_name'])
+        output_path = Path(output_dir) / f"scraping_{safe_name}.json"
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        print(f"Saved to: {output_path}")
     
     def process_urls_file(self, urls_file: str = 'src/inputs/urls.txt') -> List[Dict]:
         """Process URLs from file"""

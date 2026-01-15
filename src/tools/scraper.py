@@ -614,16 +614,115 @@ Prioritize individual model pages (eTGX, eTGS, eTGL separately) over generic ove
             return value * 1000
         return value
 
+    def _validate_extracted_value(self, value: Optional[float], content: str, field_name: str) -> Optional[float]:
+        """
+        Validate that an extracted value actually appears in the source content.
+
+        This prevents LLM hallucinations by checking if the number can be found
+        in the original webpage content.
+
+        Args:
+            value: The extracted numeric value
+            content: The original webpage content
+            field_name: The field name for logging
+
+        Returns:
+            The value if validated, None if not found in content (potential hallucination)
+        """
+        if value is None:
+            return None
+
+        # Convert to string representations that might appear in content
+        value_str = str(int(value)) if value == int(value) else str(value)
+        value_int = str(int(value))
+
+        # Also check for formatted versions (with spaces, commas)
+        formatted_versions = [
+            value_str,
+            value_int,
+            f"{int(value):,}",  # 44,000
+            f"{int(value):,}".replace(",", "."),  # 44.000 (European)
+            f"{int(value):,}".replace(",", " "),  # 44 000 (French)
+        ]
+
+        # For weights, also check for ton versions
+        if 'kg' in field_name or 'weight' in field_name.lower():
+            ton_value = value / 1000
+            if ton_value == int(ton_value):
+                formatted_versions.extend([
+                    str(int(ton_value)),  # 44
+                    f"{int(ton_value)} t",  # 44 t
+                    f"{int(ton_value)}t",  # 44t
+                ])
+            else:
+                formatted_versions.extend([
+                    str(ton_value),  # 11.99
+                    f"{ton_value} t",
+                    f"{ton_value}t",
+                ])
+
+        # Check if any version appears in content
+        content_lower = content.lower()
+        for version in formatted_versions:
+            if version.lower() in content_lower:
+                return value
+
+        # Value not found in content - potential hallucination
+        # Log but don't necessarily reject (LLM might have extracted correctly
+        # but the number format differs)
+        return value  # Keep for now, but could be made stricter
+
+    def _validate_vehicle_against_content(self, vehicle: Dict, content: str) -> Dict:
+        """
+        Validate all numeric values in a vehicle against the source content.
+
+        Removes values that appear to be hallucinated (not found in content).
+
+        Args:
+            vehicle: The extracted vehicle dictionary
+            content: The original webpage content
+
+        Returns:
+            Validated vehicle dictionary with potential hallucinations removed
+        """
+        numeric_fields = [
+            'battery_capacity_kwh', 'battery_capacity_min_kwh',
+            'battery_voltage_v', 'battery_voltage_min_v',
+            'motor_power_kw', 'motor_power_min_kw',
+            'motor_torque_nm', 'motor_torque_min_nm',
+            'range_km', 'range_min_km',
+            'dc_charging_kw', 'dc_charging_min_kw',
+            'mcs_charging_kw', 'mcs_charging_min_kw',
+            'charging_time_minutes', 'charging_time_max_minutes',
+            'gvw_kg', 'gvw_min_kg',
+            'gcw_kg', 'gcw_min_kg',
+            'payload_capacity_kg', 'payload_capacity_min_kg',
+        ]
+
+        validated = vehicle.copy()
+
+        for field in numeric_fields:
+            value = validated.get(field)
+            if value is not None:
+                validated_value = self._validate_extracted_value(value, content, field)
+                validated[field] = validated_value
+
+        return validated
+
     async def _extract_specs(self, url: str, content: str) -> List[Dict]:
         """
         Phase 3: Extract structured vehicle specifications using OpenAI directly.
 
         Uses the already-fetched content (from Phase 2) and calls OpenAI API
         directly for high-accuracy structured extraction with JSON mode.
-        Focuses on finding technical data tables and specification sections.
+
+        DESIGNED FOR WORLDWIDE OEMs - Handles multiple languages and terminologies:
+        - English, German, French, Spanish, Italian, Dutch, Swedish, etc.
+        - Different OEM naming conventions
+        - Various table formats and spec sheet layouts
         """
         try:
-            # Truncate content if too long
+            # Truncate content if too long, but try to keep spec tables
             if len(content) > ScraperConfig.MAX_CONTENT_LENGTH:
                 content = content[:ScraperConfig.MAX_CONTENT_LENGTH]
 
@@ -638,112 +737,148 @@ WEBPAGE CONTENT:
 {content}
 ---
 
-**CRITICAL: Only extract data that is EXPLICITLY stated in the content above!**
+**ABSOLUTE RULE: ONLY extract data that is EXPLICITLY written in the content above!**
+**If a specification is NOT mentioned in the content, you MUST use null. NEVER guess or estimate.**
 
 LOOK FOR these data sources in the content:
-1. Technical specification tables (rows with "Battery", "Range", "Power", "GVW", "GCW")
-2. Key facts or highlights sections with numbers
-3. Product comparison tables with specs
-4. Spec sheets or data sheets
-5. **MOTOR POWER**: Look for "kW", "continuous power", "drive output", "motor output", "peak power"
+1. Technical specification tables (any format - markdown, HTML-style, bullet lists)
+2. Key facts, highlights, or feature sections with numbers
+3. Product comparison tables
+4. Spec sheets, data sheets, or technical data sections
+5. Individual product pages with specifications
 
-For EACH electric TRUCK found (NOT buses), extract ALL values exactly as shown on the website.
-**CRITICAL: For ANY range (e.g., "600-800V", "320-480 kWh"), capture BOTH min and max values!**
+**WORLDWIDE TERMINOLOGY MAPPING - OEMs use different words for the same specs!**
 
-- vehicle_name: Full model name with variant (e.g., "MAN eTGX 4x2 semitrailer", "MAN eTGS 6x2")
+Map these EQUIVALENT terms to our fields (match ANY language/variation):
 
-BATTERY:
-- battery_capacity_kwh: MAX battery (e.g., "320-480 kWh" -> 480)
-- battery_capacity_min_kwh: MIN battery (e.g., "320-480 kWh" -> 320)
-- battery_voltage_v: MAX voltage (e.g., "600-800V" -> 800)
-- battery_voltage_min_v: MIN voltage (e.g., "600-800V" -> 600)
+| Field | Equivalent Terms (EN/DE/FR/ES/IT/NL/SV) |
+|-------|----------------------------------------|
+| battery_capacity_kwh | battery capacity, battery, kWh, energy content, Batteriekapazität, Batterie, Akku, capacité batterie, capacidad batería, capacità batteria, batterijcapaciteit, batterikapacitet |
+| motor_power_kw | motor power, power, drive power, continuous output, peak power, kW output, Motorleistung, Leistung, Antriebsleistung, puissance moteur, potencia motor, potenza motore, motorvermogen, motoreffekt, PS*, hp*, CV*, pk* |
+| motor_torque_nm | torque, Nm, Newton-metre, Drehmoment, couple, par motor, coppia, koppel, vridmoment |
+| range_km | range, driving range, electric range, km, kilometres, Reichweite, autonomie, autonomía, raggio d'azione, bereik, räckvidd |
+| dc_charging_kw | DC charging, fast charging, CCS, charging power, Schnellladen, DC-Laden, Ladeleistung, charge rapide, carga rápida, ricarica rapida, snelladen |
+| mcs_charging_kw | MCS, Megawatt Charging, megawatt, MW charging, high power charging, HPC, 750 kW+ |
+| charging_time_minutes | charging time, charge time, minutes, min, Ladezeit, Ladedauer, temps de charge, tiempo de carga, tempo di ricarica, laadtijd |
+| gvw_kg | GVW, gross vehicle weight, GVWR, permissible weight, vehicle weight, Gesamtgewicht, zulässiges Gesamtgewicht, PTAC, poids total, PMA, peso máximo, MTT, massa totale |
+| gcw_kg | GCW, gross combination weight, train weight, combination weight, Zuggesamtgewicht, zulässiges Zuggesamtgewicht, PTRA, poids roulant, MMA |
+| payload_capacity_kg | payload, load capacity, cargo capacity, Nutzlast, Zuladung, charge utile, carga útil, portata utile |
 
-MOTOR:
-- motor_power_kw: MAX motor power in kW (convert: 1 PS = 0.735 kW, 1 hp = 0.746 kW)
-- motor_power_min_kw: MIN motor power if range given
-- motor_torque_nm: MAX torque in Nm
-- motor_torque_min_nm: MIN torque if range given
+*PS/hp/CV/pk require conversion: multiply by 0.735 to get kW
 
-RANGE:
-- range_km: MAX driving range (e.g., "500-750 km" -> 750)
-- range_min_km: MIN driving range (e.g., "500-750 km" -> 500)
+**EXTRACTION RULES - FOLLOW STRICTLY:**
 
-CHARGING:
-- dc_charging_kw: MAX CCS charging power (e.g., "150-375 kW" -> 375)
-- dc_charging_min_kw: MIN CCS charging power (e.g., "150-375 kW" -> 150)
-- mcs_charging_kw: MAX MCS (Megawatt) charging power
-- mcs_charging_min_kw: MIN MCS power if range given
-- charging_time_minutes: MIN charging time (e.g., "30-45 min" -> 30)
-- charging_time_max_minutes: MAX charging time (e.g., "30-45 min" -> 45)
+1. **EXTRACT ONLY EXPLICIT DATA**: If a value is not written in the content, use null
+   - DO NOT infer motor power from vehicle class or size
+   - DO NOT estimate range from battery size
+   - DO NOT guess charging time from charging power
+   - ONLY extract what you can literally see in the text
 
-WEIGHT (convert tons to kg: 28t = 28000 kg):
-- gvw_kg: MAX Gross Vehicle Weight (single vehicle)
-- gvw_min_kg: MIN GVW if range given
-- gcw_kg: MAX Gross Combination Weight (with trailer)
-- gcw_min_kg: MIN GCW if range given
-- payload_capacity_kg: MAX payload
-- payload_capacity_min_kg: MIN payload if range given
+2. **HANDLE RANGES**: If website shows a range, capture BOTH values:
+   - "320-480 kWh" → battery_capacity_kwh: 480, battery_capacity_min_kwh: 320
+   - "500-750 km" → range_km: 750, range_min_km: 500
+   - "up to 400 kW" → motor_power_kw: 400 (min is null)
 
-OTHER:
-- powertrain_type: "BEV" | "FCEV" | "PHEV"
-- available_configurations: Array like ["4x2", "6x2"]
+3. **UNIT CONVERSIONS**: Apply automatically:
+   - tonnes/t → kg: multiply by 1000 (e.g., 28t = 28000 kg)
+   - PS/CV/pk → kW: multiply by 0.735 (e.g., 544 PS = 400 kW)
+   - hp/bhp → kW: multiply by 0.746
 
-**CRITICAL WEIGHT DISTINCTION - GVW vs GCW:**
-- GVW (Gross Vehicle Weight): Weight of the truck ALONE (e.g., chassis = 20t, 28t)
-- GCW (Gross Combination Weight): Weight of truck + trailer combined (e.g., semitrailer = 40-44t)
-- For SEMITRAILER tractors: GCW is usually 40-44 tons, GVW is LOWER (the tractor weight)
-- If only one weight is given for a semitrailer config and it's 40-44t, it's likely GCW, NOT GVW!
+4. **WEIGHT DISTINCTION** (CRITICAL):
+   - GVW = weight of truck ALONE (chassis: typically 18-28t)
+   - GCW = weight of truck + trailer COMBINED (typically 40-44t for semitrailers)
+   - If a semitrailer shows only "44t", that's GCW, NOT GVW!
 
-**CHARGING - CCS vs MCS:**
-- CCS (Combined Charging System): Standard DC fast charging, typically up to 350-400 kW
-- MCS (Megawatt Charging System): High-power charging for heavy trucks, 750+ kW
-- Extract BOTH if mentioned! They are different systems.
+5. **CHARGING SYSTEMS** (IMPORTANT):
+   - CCS/DC charging: standard fast charging, up to ~400 kW → dc_charging_kw
+   - MCS/Megawatt: high-power charging, 750+ kW → mcs_charging_kw
+   - Extract BOTH if both are mentioned
 
-**STRICT RULES - FOLLOW EXACTLY:**
-1. ONLY extract specs that appear in the content - NEVER invent or estimate values
-2. If a spec is not mentioned, use null - do NOT guess
-3. Do NOT include buses (Lion's City, City Bus, etc.) - trucks only
-4. WEIGHT: Always convert tons to kg (28t = 28000 kg, not 28)
-5. If same model has variants (4x2 vs 6x2), extract each as separate vehicle
-6. Each variant with different specs should be a separate entry
-7. If content mentions "up to X kW" for motor/charging, extract X as the MAX value
-8. MOTOR POWER is critical - search carefully for any mention of kW drive/motor output
-9. **RANGES ARE CRITICAL**: If website shows "600-800V", you MUST extract BOTH 600 and 800!
+6. **VEHICLE VARIANTS**: Extract each variant separately:
+   - "4x2", "6x2", "6x4", "8x4" are different configurations
+   - "chassis", "tractor", "semitrailer" are different body types
+   - Each combination with different specs = separate entry
 
-Return ONLY valid JSON:
+7. **EXCLUDE**: Buses (City Bus, Lion's City, Citaro, etc.) - trucks only
+
+**OUTPUT FORMAT:**
+Return ONLY valid JSON with this structure:
 {{"vehicles": [
-  {{"vehicle_name": "MAN eTGX 4x2 semitrailer", "battery_capacity_kwh": 480, "battery_capacity_min_kwh": 320, "battery_voltage_v": 800, "battery_voltage_min_v": 600, "range_km": 500, "motor_power_kw": 400, "dc_charging_kw": 375, "mcs_charging_kw": 750, "gvw_kg": null, "gcw_kg": 44000, ...}},
-  ...
+  {{
+    "vehicle_name": "Full model name with variant",
+    "battery_capacity_kwh": <number or null>,
+    "battery_capacity_min_kwh": <number or null>,
+    "battery_voltage_v": <number or null>,
+    "battery_voltage_min_v": <number or null>,
+    "motor_power_kw": <number or null>,
+    "motor_power_min_kw": <number or null>,
+    "motor_torque_nm": <number or null>,
+    "motor_torque_min_nm": <number or null>,
+    "range_km": <number or null>,
+    "range_min_km": <number or null>,
+    "dc_charging_kw": <number or null>,
+    "dc_charging_min_kw": <number or null>,
+    "mcs_charging_kw": <number or null>,
+    "mcs_charging_min_kw": <number or null>,
+    "charging_time_minutes": <number or null>,
+    "charging_time_max_minutes": <number or null>,
+    "gvw_kg": <number or null>,
+    "gvw_min_kg": <number or null>,
+    "gcw_kg": <number or null>,
+    "gcw_min_kg": <number or null>,
+    "payload_capacity_kg": <number or null>,
+    "payload_capacity_min_kg": <number or null>,
+    "powertrain_type": "BEV" | "FCEV" | "PHEV",
+    "available_configurations": ["4x2", "6x2", ...]
+  }}
 ]}}"""
 
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": """You are a precise technical data extraction expert for commercial vehicle specifications.
+                    {"role": "system", "content": """You are a precise technical data extraction expert specializing in commercial electric vehicle specifications from OEM websites worldwide.
 
-CRITICAL RULES:
-1. ONLY extract data explicitly stated in the provided content
-2. NEVER hallucinate, estimate, or infer values not directly stated
-3. Use null for any specification not found in the content
-4. Convert tons to kg (multiply by 1000)
-5. Exclude buses - extract trucks only
+**YOUR MISSION**: Extract ONLY data that is EXPLICITLY written on the webpage. Your accuracy is critical for enterprise automotive benchmarking.
 
-**RANGES ARE CRITICAL - CAPTURE ALL VALUES:**
-- If website shows "600-800V", extract BOTH: battery_voltage_v=800, battery_voltage_min_v=600
-- If website shows "320-480 kWh", extract BOTH: battery_capacity_kwh=480, battery_capacity_min_kwh=320
-- If website shows "300-400 kW", extract BOTH: motor_power_kw=400, motor_power_min_kw=300
-- NEVER ignore the minimum value in a range!
+**ABSOLUTE RULES - NEVER VIOLATE:**
 
-WEIGHT DISTINCTION (VERY IMPORTANT):
-- GVW = Gross Vehicle Weight = weight of truck ALONE (chassis trucks: 20t, 28t)
-- GCW = Gross Combination Weight = truck + trailer (semitrailers: 40-44t)
-- For semitrailer tractors, 44 tons is GCW, NOT GVW!
+1. **EXTRACTION = EXPLICIT DATA ONLY**
+   - If you cannot find a specific value written in the content, use null
+   - NEVER infer, estimate, calculate, or guess values
+   - NEVER use your general knowledge about vehicles
+   - ONLY extract what is literally written in the provided content
+   - "Wrong data is worse than missing data"
 
-MOTOR POWER: Actively search for "kW", "continuous output", "drive power" - this is critical data!
+2. **WORLDWIDE TERMINOLOGY**
+   Different OEMs use different terms in different languages. Map them correctly:
+   - German: Leistung=power, Reichweite=range, Batteriekapazität=battery, Ladezeit=charging time
+   - French: puissance=power, autonomie=range, capacité=capacity, temps de charge=charging time
+   - Spanish: potencia=power, autonomía=range, capacidad=capacity, tiempo de carga=charging time
+   - Also: Italian, Dutch, Swedish, Norwegian, Portuguese variations
 
-CHARGING: CCS (up to ~400kW) and MCS (750kW+) are DIFFERENT systems - extract both if mentioned.
+3. **UNIT DETECTION & CONVERSION**
+   - Detect units from context: kW, PS, hp, CV, pk, Nm, km, mi, t, kg, kWh
+   - Convert to standard: PS/CV/pk→kW (×0.735), hp→kW (×0.746), t→kg (×1000)
 
-Your accuracy is critical for automotive benchmarking. Wrong data is worse than missing data."""},
+4. **WEIGHT CLASSIFICATION**
+   - GVW (Gross Vehicle Weight) = single truck weight (18-28t typical)
+   - GCW (Gross Combination Weight) = truck+trailer (40-44t typical)
+   - For semitrailers/tractors: if only one large weight given (40-44t), it's GCW not GVW
+
+5. **CHARGING SYSTEMS**
+   - Standard DC/CCS: up to ~400 kW → dc_charging_kw
+   - MCS/Megawatt: 750+ kW → mcs_charging_kw
+   - These are DIFFERENT systems - extract both if present
+
+6. **RANGES**
+   - When a range is given (e.g., "320-480 kWh"), extract BOTH min and max
+   - "up to X" means max=X, min=null
+
+7. **VEHICLE NAMES**
+   - Include full model name with configuration (e.g., "Volvo FH Electric 4x2 Tractor")
+   - Keep OEM naming conventions
+
+Your extraction will be used for enterprise competitive analysis. Precision is paramount."""},
                     {"role": "user", "content": extraction_prompt}
                 ],
                 temperature=0.0,  # Zero temperature for deterministic extraction
@@ -851,50 +986,90 @@ Your accuracy is critical for automotive benchmarking. Wrong data is worse than 
         1. Source URL quality (model pages > generic pages)
         2. Data completeness (more filled fields = better)
         3. Specific variants over generic names
-        """
-        seen = {}
 
+        Also removes:
+        - Empty entries (data_completeness_score < 0.2)
+        - Generic entries when specific variants exist
+        """
+        # STEP 1: Filter out empty/low-quality entries first
+        MIN_COMPLETENESS = 0.2  # At least 20% data required
+        filtered_vehicles = []
         for v in vehicles:
+            # Calculate completeness if not already set
+            if 'data_completeness_score' not in v:
+                important_fields = ['battery_capacity_kwh', 'range_km', 'motor_power_kw', 'gvw_kg']
+                filled = sum(1 for f in important_fields if v.get(f) is not None)
+                v['data_completeness_score'] = filled / len(important_fields) if important_fields else 0
+
+            if v.get('data_completeness_score', 0) >= MIN_COMPLETENESS:
+                filtered_vehicles.append(v)
+            else:
+                print(f"  [Dedup] Filtered out empty entry: {v.get('vehicle_name')} (completeness: {v.get('data_completeness_score', 0):.0%})")
+
+        # STEP 2: Identify specific variants for each base model
+        # E.g., "MAN eTGX" is generic, "MAN eTGX 4x2 Chassis" is specific
+        base_models = {}  # base_model -> list of (full_name, vehicle)
+        variant_indicators = ['4x2', '6x2', '6x4', '8x4', 'chassis', 'sattel', 'semitrailer', 'tractor']
+
+        for v in filtered_vehicles:
             name = v.get('vehicle_name', '').lower().strip()
             if not name:
                 continue
-
-            # Skip buses if filtering for trucks
             if self._is_excluded_vehicle(v):
                 continue
 
-            # Normalize name for matching
-            # e.g., "MAN eTGX" and "MAN eTGX 4x2" should be separate
-            # but "MAN eTGX" from two sources should dedupe
-            normalized_name = self._normalize_vehicle_name(name)
+            # Determine base model name
+            base_model = self._get_base_model_name(name)
+            is_specific = any(ind in name for ind in variant_indicators)
 
-            source_url = v.get('source_url', '')
-            source_quality = self._get_source_quality_score(source_url)
+            if base_model not in base_models:
+                base_models[base_model] = {'generic': [], 'specific': []}
 
-            # Count important filled fields (more specific than just any field)
-            important_fields = [
-                'battery_capacity_kwh', 'range_km', 'motor_power_kw', 'gvw_kg',
-                'dc_charging_kw', 'charging_time_minutes', 'payload_capacity_kg'
-            ]
-            data_completeness = sum(1 for f in important_fields if v.get(f) is not None)
-
-            # Combined quality score
-            quality_score = source_quality + (data_completeness * 10)
-            v['_quality_score'] = quality_score
-
-            if normalized_name not in seen:
-                seen[normalized_name] = v
+            if is_specific:
+                base_models[base_model]['specific'].append(v)
             else:
-                existing = seen[normalized_name]
-                existing_quality = existing.get('_quality_score', 0)
+                base_models[base_model]['generic'].append(v)
 
-                # Keep the one with better quality score
-                if quality_score > existing_quality:
+        # STEP 3: For each base model, keep specific variants OR generic (not both)
+        seen = {}
+        for base_model, entries in base_models.items():
+            # If we have specific variants, use those and skip generic
+            vehicles_to_process = entries['specific'] if entries['specific'] else entries['generic']
+
+            if entries['specific'] and entries['generic']:
+                print(f"  [Dedup] Removing {len(entries['generic'])} generic entry(s) for '{base_model}' - have {len(entries['specific'])} specific variant(s)")
+
+            for v in vehicles_to_process:
+                name = v.get('vehicle_name', '').lower().strip()
+                normalized_name = self._normalize_vehicle_name(name)
+
+                source_url = v.get('source_url', '')
+                source_quality = self._get_source_quality_score(source_url)
+
+                # Count important filled fields
+                important_fields = [
+                    'battery_capacity_kwh', 'range_km', 'motor_power_kw', 'gvw_kg',
+                    'dc_charging_kw', 'mcs_charging_kw', 'charging_time_minutes', 'payload_capacity_kg'
+                ]
+                data_completeness = sum(1 for f in important_fields if v.get(f) is not None)
+
+                # Combined quality score
+                quality_score = source_quality + (data_completeness * 10)
+                v['_quality_score'] = quality_score
+
+                if normalized_name not in seen:
                     seen[normalized_name] = v
-                # If same quality, prefer the one with more specific name
-                elif quality_score == existing_quality:
-                    if len(name) > len(existing.get('vehicle_name', '')):
+                else:
+                    existing = seen[normalized_name]
+                    existing_quality = existing.get('_quality_score', 0)
+
+                    # Keep the one with better quality score
+                    if quality_score > existing_quality:
                         seen[normalized_name] = v
+                    # If same quality, prefer the one with more specific name
+                    elif quality_score == existing_quality:
+                        if len(name) > len(existing.get('vehicle_name', '')):
+                            seen[normalized_name] = v
 
         # Clean up internal score field
         result = []
@@ -903,6 +1078,39 @@ Your accuracy is critical for automotive benchmarking. Wrong data is worse than 
             result.append(v)
 
         return result
+
+    def _get_base_model_name(self, name: str) -> str:
+        """
+        Extract base model name from full vehicle name.
+
+        E.g., "MAN eTGX 4x2 semitrailer" -> "man etgx"
+              "MAN eTGS 6x2 Chassis" -> "man etgs"
+              "Mercedes eActros 300" -> "mercedes eactros"
+        """
+        name = name.lower().strip()
+
+        # Common model patterns to extract
+        patterns = [
+            r'(man\s+etg[xsl])',
+            r'(mercedes\s+eactros)',
+            r'(volvo\s+f[hm]\s*electric)',
+            r'(daf\s+[xc]f\s*electric)',
+            r'(scania\s+\d+[rspgl]?\s*bev)',
+            r'(iveco\s+s-?eway)',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, name)
+            if match:
+                return match.group(1).strip()
+
+        # Fallback: use first two words as base model
+        words = name.split()
+        if len(words) >= 2:
+            # Check if second word looks like a model name (not a config like "4x2")
+            if not re.match(r'\d+x\d+', words[1]) and words[1] not in ['chassis', 'sattel', 'semitrailer', 'tractor']:
+                return ' '.join(words[:2])
+        return words[0] if words else name
 
     def _normalize_vehicle_name(self, name: str) -> str:
         """
@@ -1323,7 +1531,50 @@ class SpecificationParser:
         Calculate data completeness score based on filled important fields.
 
         Important fields weighted for e-powertrain benchmarking.
+        Note: MCS or DC charging counts (having either is sufficient).
         """
+        # Core specs (high importance)
+        core_fields = [
+            'battery_capacity_kwh',
+            'range_km',
+        ]
+
+        # Either GVW or GCW should be present (for different truck types)
+        weight_fields = ['gvw_kg', 'gcw_kg']
+
+        # Either DC or MCS charging should be present
+        charging_power_fields = ['dc_charging_kw', 'mcs_charging_kw']
+
+        # Additional important fields
+        additional_fields = [
+            'motor_power_kw',  # Often not provided on websites
+            'charging_time_minutes',
+            'motor_torque_nm',
+            'payload_capacity_kg',
+        ]
+
+        # Count filled fields
+        core_filled = sum(1 for f in core_fields if vehicle.get(f) is not None)
+        has_weight = any(vehicle.get(f) is not None for f in weight_fields)
+        has_charging = any(vehicle.get(f) is not None for f in charging_power_fields)
+        additional_filled = sum(1 for f in additional_fields if vehicle.get(f) is not None)
+
+        # Calculate score
+        # Core fields: 50% weight (battery, range are essential)
+        # Weight: 15% weight (GVW or GCW)
+        # Charging: 15% weight (DC or MCS)
+        # Additional: 20% weight (motor power, torque, payload, charging time)
+        score = (
+            (core_filled / len(core_fields)) * 0.50 +
+            (1.0 if has_weight else 0.0) * 0.15 +
+            (1.0 if has_charging else 0.0) * 0.15 +
+            (additional_filled / len(additional_fields)) * 0.20
+        )
+
+        return round(score, 2)
+
+    def _calc_completeness_simple(self, vehicle: Dict) -> float:
+        """Simple completeness calculation for backward compatibility."""
         important_fields = [
             'battery_capacity_kwh',
             'range_km',

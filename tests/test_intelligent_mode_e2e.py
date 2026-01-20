@@ -1,7 +1,7 @@
 """
 E2E Tests for Intelligent Mode (CRAWL4AI + OpenAI)
 
-These tests verify the complete workflow using the new default Intelligent mode,
+These tests verify the complete workflow using the Intelligent mode,
 which uses CRAWL4AI for multi-page crawling and OpenAI GPT-4o for extraction.
 
 Tests cover:
@@ -13,7 +13,6 @@ Tests cover:
 
 Requirements:
 - OPENAI_API_KEY (required)
-- PERPLEXITY_API_KEY (NOT required - this is the point!)
 
 Run with: pytest tests/test_intelligent_mode_e2e.py -v -s --tb=short
 """
@@ -183,7 +182,7 @@ class TestCompleteWorkflowIntelligentMode:
         """
         Test complete workflow: Scrape -> Validate -> Generate Presentation.
 
-        Uses Intelligent mode (CRAWL4AI + OpenAI) - NO Perplexity API needed.
+        Uses Intelligent mode (CRAWL4AI + OpenAI).
         """
         from src.graph.runtime import run_benchmark
         from src.state.state import WorkflowStatus, ScrapingMode
@@ -191,7 +190,7 @@ class TestCompleteWorkflowIntelligentMode:
         print("\n" + "=" * 60)
         print("TEST: Complete Workflow - Intelligent Mode")
         print("=" * 60)
-        print("Mode: CRAWL4AI + OpenAI (Perplexity NOT required)")
+        print("Mode: CRAWL4AI + OpenAI")
         print(f"URL: {single_test_url[0]}")
         print("-" * 60)
 
@@ -429,38 +428,6 @@ class TestDataQuality:
 
 
 # =============================================================================
-# TEST: NO PERPLEXITY REQUIRED
-# =============================================================================
-
-class TestNoPerplexityRequired:
-    """Verify the system works without Perplexity API key."""
-
-    def test_workflow_initializes_without_perplexity(self):
-        """Test that workflow can initialize without PERPLEXITY_API_KEY."""
-        from src.state.state import initialize_state, ScrapingMode
-
-        # Save current key
-        perplexity_key = os.environ.pop("PERPLEXITY_API_KEY", None)
-
-        try:
-            # Should work without Perplexity key
-            state = initialize_state(
-                ["https://example.com"],
-                scraping_mode=ScrapingMode.INTELLIGENT
-            )
-
-            assert state is not None
-            assert state["scraping_mode"] == ScrapingMode.INTELLIGENT
-
-            print("+ Workflow initializes without PERPLEXITY_API_KEY")
-
-        finally:
-            # Restore key if it existed
-            if perplexity_key:
-                os.environ["PERPLEXITY_API_KEY"] = perplexity_key
-
-
-# =============================================================================
 # TEST: SUMMARY - COMPLETE BUSINESS SCENARIO
 # =============================================================================
 
@@ -588,7 +555,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print()
     print("These tests verify the CRAWL4AI + OpenAI workflow.")
-    print("PERPLEXITY_API_KEY is NOT required.")
     print()
     print("Running tests...")
     print()

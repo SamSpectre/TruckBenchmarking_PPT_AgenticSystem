@@ -7,7 +7,6 @@ Run from project root: python run_e2e_test.py
 
 Requirements:
 - OPENAI_API_KEY environment variable set
-- PERPLEXITY_API_KEY is NOT required
 """
 
 import sys
@@ -130,19 +129,13 @@ def main():
     print_section("TEST 2: API Key Verification")
 
     openai_key = os.getenv("OPENAI_API_KEY")
-    perplexity_key = os.getenv("PERPLEXITY_API_KEY")
 
     passed = openai_key is not None and len(openai_key) > 0
     all_checks.append(check_result(
         "OPENAI_API_KEY is set",
         passed,
-        f"Starts with: {openai_key[:8]}..." if passed else "NOT SET"
+        f"Key found" if passed else "NOT SET"
     ))
-
-    if perplexity_key:
-        print(f"  * PERPLEXITY_API_KEY is also set (optional)")
-    else:
-        print(f"  * PERPLEXITY_API_KEY not set (OK - not needed for Intelligent mode)")
 
     if not openai_key:
         print("\nERROR: OPENAI_API_KEY is required for E2E tests")

@@ -17,7 +17,6 @@ This script performs:
 
 Requirements:
 - OPENAI_API_KEY (required)
-- PERPLEXITY_API_KEY (optional - not needed for Intelligent mode)
 """
 
 import sys
@@ -174,13 +173,6 @@ def test_environment(results: TestResults) -> bool:
         print(f"  {Colors.RED}ERROR: OPENAI_API_KEY is required.{Colors.END}")
         print("  Set it in your .env file or as an environment variable.")
         return False
-
-    # Check PERPLEXITY_API_KEY (optional)
-    perplexity_key = os.getenv("PERPLEXITY_API_KEY")
-    if perplexity_key:
-        results.add_pass("PERPLEXITY_API_KEY is set (optional)")
-    else:
-        print_info("PERPLEXITY_API_KEY not set (OK - not needed for Intelligent mode)")
 
     return True
 

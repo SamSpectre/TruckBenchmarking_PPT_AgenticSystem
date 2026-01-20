@@ -189,7 +189,7 @@ def run_benchmark(
     urls: List[str],
     thread_id: str = "default",
     verbose: bool = True,
-    mode: ScrapingMode = ScrapingMode.PERPLEXITY
+    mode: ScrapingMode = ScrapingMode.INTELLIGENT
 ) -> BenchmarkingState:
     """
     Run the complete benchmarking workflow.
@@ -198,7 +198,7 @@ def run_benchmark(
         urls: List of OEM website URLs to scrape
         thread_id: Thread ID for checkpointing
         verbose: Print progress updates
-        mode: Scraping mode (intelligent, perplexity, or auto)
+        mode: Scraping mode (default: intelligent)
 
     Returns:
         Final BenchmarkingState after workflow completion
@@ -236,7 +236,7 @@ def run_benchmark(
 def stream_benchmark(
     urls: List[str],
     thread_id: str = "default",
-    mode: ScrapingMode = ScrapingMode.PERPLEXITY
+    mode: ScrapingMode = ScrapingMode.INTELLIGENT
 ):
     """
     Stream workflow execution, yielding state after each step.
@@ -246,7 +246,7 @@ def stream_benchmark(
     Args:
         urls: List of OEM website URLs
         thread_id: Thread ID for checkpointing
-        mode: Scraping mode (intelligent, perplexity, or auto)
+        mode: Scraping mode (default: intelligent)
 
     Yields:
         Dict with node name and updated state after each step
@@ -335,9 +335,9 @@ Examples:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["intelligent", "perplexity", "auto"],
-        default="intelligent",  # Changed: Use CRAWL4AI multi-page mode by default
-        help="Scraping mode: intelligent (multi-page CRAWL4AI+OpenAI, recommended), perplexity (legacy single-page), auto"
+        choices=["intelligent", "auto"],
+        default="intelligent",
+        help="Scraping mode: intelligent (multi-page CRAWL4AI+OpenAI), auto"
     )
 
     args = parser.parse_args()
@@ -345,10 +345,9 @@ Examples:
     # Parse mode
     mode_map = {
         "intelligent": ScrapingMode.INTELLIGENT,
-        "perplexity": ScrapingMode.PERPLEXITY,
         "auto": ScrapingMode.AUTO,
     }
-    scraping_mode = mode_map.get(args.mode, ScrapingMode.PERPLEXITY)
+    scraping_mode = mode_map.get(args.mode, ScrapingMode.INTELLIGENT)
 
     # Print graph visualization
     if args.graph:

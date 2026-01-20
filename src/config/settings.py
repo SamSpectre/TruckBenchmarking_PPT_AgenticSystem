@@ -18,21 +18,15 @@ class Settings(BaseSettings):
     """
     Main configuration class using Pydantic Settings.
     Automatically loads from .env file.
-    
+
     Example .env:
     OPENAI_API_KEY=sk-...
-    PERPLEXITY_API_KEY=pplx-...
     """
     
     # API KEYS
     openai_api_key: str = Field(
         ...,
         description="OpenAI API key (required)"
-    )
-    
-    perplexity_api_key: Optional[str] = Field(
-        None,
-        description="Perplexity API key (optional)"
     )
     
     # FILE PATHS
@@ -48,8 +42,8 @@ class Settings(BaseSettings):
     
     # MODEL CONFIGURATIONS
     scraping_model: str = Field(
-        default="sonar-pro",
-        description="Perplexity model for web scraping"
+        default="gpt-4o",
+        description="Model for web scraping extraction"
     )
 
     quality_validator_model: str = Field(
@@ -126,29 +120,22 @@ class Settings(BaseSettings):
 
     cost_per_1k_input_tokens: Dict[str, float] = Field(
         default={
-            "sonar-pro": 0.003,       # Perplexity Sonar Pro
             "gpt-4o": 0.0025,         # OpenAI GPT-4o
+            "gpt-4o-mini": 0.00015,   # OpenAI GPT-4o Mini
             "gpt-5": 0.00125,         # OpenAI GPT-5
             "gpt-5-mini": 0.00025,    # OpenAI GPT-5 Mini
-            "gpt-5-nano": 0.00005,    # OpenAI GPT-5 Nano
         },
         description="Cost per 1K input tokens (USD)"
     )
 
     cost_per_1k_output_tokens: Dict[str, float] = Field(
         default={
-            "sonar-pro": 0.015,       # Perplexity Sonar Pro
             "gpt-4o": 0.01,           # OpenAI GPT-4o
+            "gpt-4o-mini": 0.0006,    # OpenAI GPT-4o Mini
             "gpt-5": 0.01,            # OpenAI GPT-5
             "gpt-5-mini": 0.002,      # OpenAI GPT-5 Mini
-            "gpt-5-nano": 0.0004,     # OpenAI GPT-5 Nano
         },
         description="Cost per 1K output tokens (USD)"
-    )
-
-    perplexity_request_fee: float = Field(
-        default=0.005,
-        description="Perplexity API request fee ($5 per 1000 requests)"
     )
     
     # PYDANTIC CONFIG
@@ -164,17 +151,15 @@ class Settings(BaseSettings):
         self,
         model_name: str,
         input_tokens: int = 0,
-        output_tokens: int = 0,
-        include_request_fee: bool = False
+        output_tokens: int = 0
     ) -> float:
         """
         Calculate cost for model and token count.
 
         Args:
-            model_name: Model name (e.g., "sonar-pro", "gpt-5-mini")
+            model_name: Model name (e.g., "gpt-4o", "gpt-5-mini")
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
-            include_request_fee: Add Perplexity request fee if applicable
 
         Returns:
             Total cost in USD
@@ -185,10 +170,6 @@ class Settings(BaseSettings):
         input_cost = (input_tokens / 1000) * input_cost_per_1k
         output_cost = (output_tokens / 1000) * output_cost_per_1k
         total_cost = input_cost + output_cost
-
-        # Add Perplexity request fee if applicable
-        if include_request_fee and model_name.startswith("sonar"):
-            total_cost += self.perplexity_request_fee
 
         return total_cost
     
@@ -212,7 +193,6 @@ if __name__ == "__main__":
     
     print("\nAPI KEYS:")
     print(f"  OpenAI: {'Loaded' if settings.openai_api_key else 'Missing'}")
-    print(f"  Perplexity: {'Loaded' if settings.perplexity_api_key else 'Missing'}")
     
     print("\nMODELS:")
     print(f"  Scraping: {settings.scraping_model}")

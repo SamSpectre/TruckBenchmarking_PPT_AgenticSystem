@@ -233,8 +233,7 @@ def create_app():
                     with gr.Column(scale=1):
                         mode_dropdown = gr.Dropdown(
                             choices=[
-                                ("Multi-page Extraction (Recommended)", "intelligent"),
-                                ("Legacy Single-page (Deprecated)", "perplexity"),
+                                ("Intelligent Extraction", "intelligent"),
                             ],
                             value="intelligent",
                             label="Extraction Mode"
@@ -269,12 +268,10 @@ def create_app():
                 gr.Markdown("""
                 ## How to Use
 
-                1. **Enter URLs**: Paste OEM electric vehicle specification page URLs
-                2. **Select Mode**:
-                   - **Multi-page Extraction (Recommended)**: Uses CRAWL4AI + OpenAI to crawl multiple pages and extract comprehensive data
-                   - **Legacy Single-page (Deprecated)**: Uses Perplexity API for single-page extraction (being phased out)
-                3. **Start Extraction**: Click the button and wait for results
-                4. **Download**: Get PowerPoint presentations and export data
+                1. **Enter URLs**: Paste OEM electric vehicle specification page URLs (entry pages)
+                2. **Start Extraction**: The system will automatically discover and crawl all spec pages
+                3. **Review Results**: View extracted vehicle data in the table
+                4. **Download**: Get PowerPoint presentations and export data as CSV/JSON
 
                 ## Supported OEMs
                 - MAN Truck & Bus

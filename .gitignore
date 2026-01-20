@@ -16,17 +16,6 @@ credentials.json
 **/*credential*
 
 # =====================================================================
-# CLAUDE CODE & AI ASSISTANTS
-# =====================================================================
-.claude/
-CLAUDE.md
-.anthropic/
-.cursor/
-.aider*
-.continue/
-**/.claude*
-
-# =====================================================================
 # PYTHON
 # =====================================================================
 # Virtual environments
@@ -202,5 +191,4 @@ docker-compose.override.yml
 *.seed
 *.pid.lock
 .node_repl_history
-AGENT.md
 data/*.db

@@ -26,15 +26,27 @@ class WorkflowStatus(str, Enum):
     VALIDATING = "validating"
     QUALITY_FAILED = "quality_failed"
     RETRYING = "retrying"
+    AWAITING_REVIEW = "awaiting_review"  # NEW: Paused for human review
+    REVIEWING = "reviewing"  # NEW: Human is reviewing
+    REVIEW_REJECTED = "review_rejected"  # NEW: Human rejected data
     GENERATING_PRESENTATION = "generating_presentation"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class ReviewStatus(str, Enum):
+    """Human review status for data validation"""
+    PENDING = "pending"
+    APPROVED = "approved"
+    APPROVED_WITH_EDITS = "approved_with_edits"
+    REJECTED = "rejected"
 
 
 class AgentType(str, Enum):
     """Which agent is currently active"""
     SCRAPER = "scraper"
     VALIDATOR = "validator"
+    REVIEWER = "reviewer"  # NEW: Human review agent
     PRESENTER = "presenter"
     ROUTER = "router"
 
@@ -243,6 +255,19 @@ class PresentationResult(TypedDict, total=False):
     errors: List[str]  # NEW: Any errors during generation
 
 
+class ReviewDecision(TypedDict, total=False):
+    """Captures human review decision and any edits made"""
+    status: str  # ReviewStatus value
+    reviewer_id: str
+    reviewed_at: str  # ISO timestamp
+    original_vehicle_count: int
+    edited_vehicle_count: int
+    changes_made: List[Dict[str, Any]]  # List of field changes
+    rejection_reason: Optional[str]
+    csv_export_path: str
+    csv_import_path: Optional[str]
+
+
 # =====================================================================
 # MAIN WORKFLOW STATE
 # =====================================================================
@@ -280,6 +305,14 @@ class BenchmarkingState(TypedDict, total=False):
     # Validation & Output
     quality_validation: Optional[QualityValidationResult]
     presentation_result: Optional[PresentationResult]
+
+    # Human Review (CSV middleware)
+    review_status: Optional[str]  # ReviewStatus value
+    review_csv_path: Optional[str]  # Path to exported CSV for review
+    review_decision: Optional[ReviewDecision]  # Human's decision and edits
+    pre_review_vehicles: Optional[List[VehicleSpecifications]]  # Snapshot before edits
+    review_session_id: Optional[int]  # Audit trail session ID
+    thread_id: Optional[str]  # Workflow thread ID for checkpointing
     
     # Cost tracking
     total_tokens_used: int

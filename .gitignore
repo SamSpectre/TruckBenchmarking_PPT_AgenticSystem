@@ -203,3 +203,4 @@ docker-compose.override.yml
 *.pid.lock
 .node_repl_history
 AGENT.md
+data/*.db

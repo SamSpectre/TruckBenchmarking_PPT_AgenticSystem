@@ -2,12 +2,14 @@
 
 A LangGraph-based multi-agent system for automated benchmarking of electric commercial vehicle specifications. The system intelligently crawls OEM websites, extracts vehicle data using LLM-powered analysis, validates data quality, and generates professional PowerPoint presentations.
 
-## Project Status: Production Ready (v0.7.0)
+## Project Status: Production Ready (v0.8.0)
 
 The system is fully functional with the following capabilities:
 - Intelligent multi-page web crawling with automatic spec page discovery
 - LLM-powered extraction of e-powertrain specifications from OEM websites
 - Strict validation to ensure extraction accuracy (100% verified)
+- **Human-in-the-loop review**: CSV export → Excel editing → Re-import (NEW)
+- **Enterprise audit trail**: SQLite logging of review decisions and edits (NEW)
 - Rule-based quality validation with configurable thresholds
 - Automated PowerPoint generation using IAA template format
 - Async parallel processing for multiple URLs (2-3x faster)
@@ -25,6 +27,11 @@ The system is fully functional with the following capabilities:
 │           OpenAI GPT-4o           Optional LLM                   │
 │                                       │                          │
 │                                       ▼                          │
+│                              [Review Node] ◄──── PAUSE           │
+│                                   │                              │
+│                            CSV Export ──► Excel Edit ──► Upload  │
+│                                   │                              │
+│                                   ▼ (on Approve)                 │
 │                              [Presentation Generator] ──► .pptx  │
 │                                       │                          │
 │                                  python-pptx                     │
@@ -103,7 +110,13 @@ Langgraph_Project1/
 │   │   ├── __init__.py
 │   │   ├── scraping_agent.py    # Web scraping orchestration
 │   │   ├── quality_validator.py # Data quality validation
-│   │   └── presentation_generator.py  # PPT generation
+│   │   ├── presentation_generator.py  # PPT generation
+│   │   └── review_node.py       # Human-in-the-loop review (NEW)
+│   │
+│   ├── services/                # Service modules (NEW)
+│   │   ├── csv_export_service.py    # Client-friendly CSV export
+│   │   ├── csv_import_service.py    # CSV import with validation
+│   │   └── audit_service.py         # SQLite audit trail
 │   │
 │   ├── config/
 │   │   ├── settings.py          # Pydantic settings management
@@ -121,6 +134,9 @@ Langgraph_Project1/
 │   │
 │   └── inputs/
 │       └── urls.txt             # Default OEM URLs
+│
+├── data/                        # Data files (NEW)
+│   └── review_audit.db          # SQLite audit trail
 │
 ├── templates/
 │   └── IAA_Template.pptx        # PowerPoint template
@@ -202,7 +218,9 @@ The system has been verified against official OEM websites:
 - [ ] Metrics and monitoring dashboard
 
 ### Phase 4: Advanced Features
-- [ ] Human-in-the-loop approval steps
+- [x] Human-in-the-loop approval with CSV editing (v0.8.0)
+- [x] SQLite audit trail for review sessions (v0.8.0)
+- [ ] Full LangGraph interrupt() pattern for pause/resume
 - [ ] Database storage for historical comparisons
 - [ ] REST API for integration
 - [ ] Scheduled/automated benchmark runs
@@ -232,4 +250,4 @@ Proprietary - Internal Use Only
 ---
 
 **Last Updated**: January 2026
-**Version**: 0.7.0
+**Version**: 0.8.0

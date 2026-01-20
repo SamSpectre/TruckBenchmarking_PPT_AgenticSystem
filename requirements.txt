@@ -4,6 +4,7 @@
 # CORE LANGGRAPH & LANGCHAIN - Updated to 1.0 versions
 # =================================================================
 langgraph>=1.0.3
+langgraph-checkpoint-sqlite>=2.0.0  # SQLite persistence for workflow state
 langchain>=1.0.5
 langchain-core>=1.0.4
 langchain-openai>=1.0.2

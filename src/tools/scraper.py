@@ -25,6 +25,13 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from dotenv import load_dotenv
 
+# Terminology mappings for dynamic prompt generation
+from src.config.terminology_mappings import (
+    build_terminology_prompt,
+    build_semantic_equivalence_prompt,
+    SEMANTIC_EQUIVALENCES,
+)
+
 # Note: nest_asyncio.apply() is called in process_urls() to avoid
 # conflicts with Gradio/uvicorn at module import time
 
@@ -43,18 +50,29 @@ load_dotenv()
 # =====================================================================
 
 class ScraperConfig:
-    """Scraper configuration"""
-    API_URL = "https://api.perplexity.ai/chat/completions"
-    DEFAULT_MODEL = "sonar-pro"
-    MAX_TOKENS = 8000
-    TEMPERATURE = 0.1
-    WAIT_BETWEEN_URLS = 8  # seconds
-    MAX_CONTENT_LENGTH = 40000  # Max chars to send for extraction (increased for spec-heavy pages)
+    """Scraper configuration
 
-    # Intelligent Navigation Settings
-    MAX_PAGES_PER_OEM = 12  # Maximum pages to crawl per OEM (increased for better coverage)
-    LLM_EXTRACTION_MODEL = "openai/gpt-4o"  # Supports temperature=0 for deterministic extraction
-    ENABLE_INTELLIGENT_NAVIGATION = True  # Use LLM-guided navigation
+    PRIMARY MODE: Intelligent (CRAWL4AI + OpenAI GPT-4o)
+    - Multi-page extraction with LLM-guided navigation
+    - Uses OpenAI API for extraction
+
+    DEPRECATED: Perplexity mode (legacy single-page)
+    - Being phased out for enterprise deployment
+    - Perplexity settings below are kept for backwards compatibility only
+    """
+
+    # ==== PRIMARY: Intelligent Mode Settings (CRAWL4AI + OpenAI) ====
+    ENABLE_INTELLIGENT_NAVIGATION = True  # DEFAULT: Use multi-page CRAWL4AI mode
+    MAX_PAGES_PER_OEM = 12  # Maximum pages to crawl per OEM
+    LLM_EXTRACTION_MODEL = "openai/gpt-4o"  # Primary extraction model
+    MAX_CONTENT_LENGTH = 40000  # Max chars to send for extraction
+
+    # ==== DEPRECATED: Perplexity Settings (legacy, being phased out) ====
+    API_URL = "https://api.perplexity.ai/chat/completions"  # DEPRECATED
+    DEFAULT_MODEL = "sonar-pro"  # DEPRECATED
+    MAX_TOKENS = 8000  # DEPRECATED
+    TEMPERATURE = 0.1  # DEPRECATED
+    WAIT_BETWEEN_URLS = 8  # seconds - DEPRECATED
 
     # Auto-Fallback Settings
     AUTO_FALLBACK_ENABLED = True  # Automatically switch to intelligent mode if data quality is low
@@ -70,6 +88,9 @@ class ScraperConfig:
     MAX_CONCURRENT_URLS = 3         # Max URLs processed simultaneously
     MAX_CONCURRENT_CRAWLS = 5       # Max concurrent Crawl4AI page fetches
     MAX_CONCURRENT_API_CALLS = 3    # Max concurrent Perplexity/OpenAI API calls
+
+    # Hallucination Prevention Settings
+    STRICT_HALLUCINATION_CHECK = True  # STRICT: Reject values not found in source content
     ASYNC_TIMEOUT_SECONDS = 300     # 5 min timeout per URL extraction
 
 
@@ -621,6 +642,8 @@ Prioritize individual model pages (eTGX, eTGS, eTGL separately) over generic ove
         This prevents LLM hallucinations by checking if the number can be found
         in the original webpage content.
 
+        STRICT MODE (default): Reject values not found in source content.
+
         Args:
             value: The extracted numeric value
             content: The original webpage content
@@ -632,34 +655,8 @@ Prioritize individual model pages (eTGX, eTGS, eTGL separately) over generic ove
         if value is None:
             return None
 
-        # Convert to string representations that might appear in content
-        value_str = str(int(value)) if value == int(value) else str(value)
-        value_int = str(int(value))
-
-        # Also check for formatted versions (with spaces, commas)
-        formatted_versions = [
-            value_str,
-            value_int,
-            f"{int(value):,}",  # 44,000
-            f"{int(value):,}".replace(",", "."),  # 44.000 (European)
-            f"{int(value):,}".replace(",", " "),  # 44 000 (French)
-        ]
-
-        # For weights, also check for ton versions
-        if 'kg' in field_name or 'weight' in field_name.lower():
-            ton_value = value / 1000
-            if ton_value == int(ton_value):
-                formatted_versions.extend([
-                    str(int(ton_value)),  # 44
-                    f"{int(ton_value)} t",  # 44 t
-                    f"{int(ton_value)}t",  # 44t
-                ])
-            else:
-                formatted_versions.extend([
-                    str(ton_value),  # 11.99
-                    f"{ton_value} t",
-                    f"{ton_value}t",
-                ])
+        # Generate all possible string formats for this value
+        formatted_versions = self._generate_value_formats(value, field_name)
 
         # Check if any version appears in content
         content_lower = content.lower()
@@ -668,9 +665,97 @@ Prioritize individual model pages (eTGX, eTGS, eTGL separately) over generic ove
                 return value
 
         # Value not found in content - potential hallucination
-        # Log but don't necessarily reject (LLM might have extracted correctly
-        # but the number format differs)
-        return value  # Keep for now, but could be made stricter
+        if ScraperConfig.STRICT_HALLUCINATION_CHECK:
+            print(f"  [Validation] REJECTED {field_name}={value} - not found in source content")
+            return None  # STRICT: Reject hallucinations
+        else:
+            print(f"  [Validation] Warning: {field_name}={value} not verified in source")
+            return value  # LENIENT: Keep with warning
+
+    def _generate_value_formats(self, value: float, field_name: str) -> List[str]:
+        """
+        Generate all plausible string representations of a numeric value.
+
+        This helps match values that may appear in different formats
+        (e.g., "44000", "44,000", "44.000", "44 t", "598 PS", etc.)
+
+        Args:
+            value: The numeric value to generate formats for
+            field_name: The field name (used to determine unit conversions)
+
+        Returns:
+            List of string representations to search for in content
+        """
+        formats = []
+        int_val = int(value) if value == int(value) else None
+
+        # Basic number formats
+        formats.append(str(value))
+        if int_val is not None:
+            formats.append(str(int_val))
+            # Thousand separators
+            formats.append(f"{int_val:,}")                           # 44,000
+            formats.append(f"{int_val:,}".replace(",", "."))         # 44.000 (EU)
+            formats.append(f"{int_val:,}".replace(",", " "))         # 44 000 (FR)
+            formats.append(f"{int_val:,}".replace(",", "'"))         # 44'000 (CH)
+
+        # Weight fields: also check ton versions
+        if 'kg' in field_name.lower() or 'weight' in field_name.lower() or 'gvw' in field_name.lower() or 'gcw' in field_name.lower():
+            ton_val = value / 1000
+            if ton_val == int(ton_val):
+                int_ton = int(ton_val)
+                formats.extend([
+                    str(int_ton),           # 44
+                    f"{int_ton} t",          # 44 t
+                    f"{int_ton}t",           # 44t
+                    f"{int_ton} ton",        # 44 ton
+                    f"{int_ton} tonnes",     # 44 tonnes
+                    f"{int_ton} tons",       # 44 tons
+                ])
+            else:
+                formats.extend([
+                    str(ton_val),            # 11.99
+                    f"{ton_val} t",
+                    f"{ton_val}t",
+                    str(round(ton_val, 1)),  # 12.0
+                    f"{round(ton_val, 1)} t",
+                ])
+
+        # Power fields: also check PS/hp/CV equivalents
+        if 'kw' in field_name.lower() or 'power' in field_name.lower():
+            # kW to PS conversion (1 kW = 1.36 PS)
+            ps_val = value / 0.7355  # Convert kW to PS
+            hp_val = value / 0.7457  # Convert kW to hp
+
+            for unit_val, units in [(ps_val, ['ps', 'PS']), (hp_val, ['hp', 'HP', 'bhp'])]:
+                if unit_val == int(unit_val):
+                    int_unit = int(unit_val)
+                    for unit in units:
+                        formats.extend([
+                            str(int_unit),
+                            f"{int_unit} {unit}",
+                            f"{int_unit}{unit}",
+                        ])
+                else:
+                    rounded = int(round(unit_val))
+                    for unit in units:
+                        formats.extend([
+                            str(rounded),
+                            f"{rounded} {unit}",
+                            f"{rounded}{unit}",
+                        ])
+
+        # Range fields: check for km/miles variations
+        if 'range' in field_name.lower() or 'km' in field_name.lower():
+            if int_val is not None:
+                formats.extend([
+                    f"{int_val} km",
+                    f"{int_val}km",
+                    f"up to {int_val}",
+                    f"bis zu {int_val}",  # German "up to"
+                ])
+
+        return formats
 
     def _validate_vehicle_against_content(self, vehicle: Dict, content: str) -> Dict:
         """
@@ -747,24 +832,9 @@ LOOK FOR these data sources in the content:
 4. Spec sheets, data sheets, or technical data sections
 5. Individual product pages with specifications
 
-**WORLDWIDE TERMINOLOGY MAPPING - OEMs use different words for the same specs!**
+{build_terminology_prompt()}
 
-Map these EQUIVALENT terms to our fields (match ANY language/variation):
-
-| Field | Equivalent Terms (EN/DE/FR/ES/IT/NL/SV) |
-|-------|----------------------------------------|
-| battery_capacity_kwh | battery capacity, battery, kWh, energy content, Batteriekapazität, Batterie, Akku, capacité batterie, capacidad batería, capacità batteria, batterijcapaciteit, batterikapacitet |
-| motor_power_kw | motor power, power, drive power, continuous output, peak power, kW output, Motorleistung, Leistung, Antriebsleistung, puissance moteur, potencia motor, potenza motore, motorvermogen, motoreffekt, PS*, hp*, CV*, pk* |
-| motor_torque_nm | torque, Nm, Newton-metre, Drehmoment, couple, par motor, coppia, koppel, vridmoment |
-| range_km | range, driving range, electric range, km, kilometres, Reichweite, autonomie, autonomía, raggio d'azione, bereik, räckvidd |
-| dc_charging_kw | DC charging, fast charging, CCS, charging power, Schnellladen, DC-Laden, Ladeleistung, charge rapide, carga rápida, ricarica rapida, snelladen |
-| mcs_charging_kw | MCS, Megawatt Charging, megawatt, MW charging, high power charging, HPC, 750 kW+ |
-| charging_time_minutes | charging time, charge time, minutes, min, Ladezeit, Ladedauer, temps de charge, tiempo de carga, tempo di ricarica, laadtijd |
-| gvw_kg | GVW, gross vehicle weight, GVWR, permissible weight, vehicle weight, Gesamtgewicht, zulässiges Gesamtgewicht, PTAC, poids total, PMA, peso máximo, MTT, massa totale |
-| gcw_kg | GCW, gross combination weight, train weight, combination weight, Zuggesamtgewicht, zulässiges Zuggesamtgewicht, PTRA, poids roulant, MMA |
-| payload_capacity_kg | payload, load capacity, cargo capacity, Nutzlast, Zuladung, charge utile, carga útil, portata utile |
-
-*PS/hp/CV/pk require conversion: multiply by 0.735 to get kW
+{build_semantic_equivalence_prompt()}
 
 **EXTRACTION RULES - FOLLOW STRICTLY:**
 
@@ -794,10 +864,18 @@ Map these EQUIVALENT terms to our fields (match ANY language/variation):
    - MCS/Megawatt: high-power charging, 750+ kW → mcs_charging_kw
    - Extract BOTH if both are mentioned
 
-6. **VEHICLE VARIANTS**: Extract each variant separately:
-   - "4x2", "6x2", "6x4", "8x4" are different configurations
+6. **VEHICLE VARIANTS** (CRITICAL - Extract EACH as SEPARATE entry):
+   When a model has multiple configurations with different specs, create SEPARATE entries:
+   - "4x2", "6x2", "6x4", "8x4" are different axle configurations (weight/payload differs!)
    - "chassis", "tractor", "semitrailer" are different body types
-   - Each combination with different specs = separate entry
+   - "rigid", "distribution", "long-haul" may have different battery/range options
+
+   **Example**: If MAN eTGX comes in 4x2 (18t) and 6x4 (26t), create TWO entries:
+   - Entry 1: vehicle_name="MAN eTGX 4x2", gvw_kg=18000, ...
+   - Entry 2: vehicle_name="MAN eTGX 6x4", gvw_kg=26000, ...
+
+   Use FULL model name with configuration in vehicle_name field!
+   DO NOT combine multiple variants into a single entry.
 
 7. **EXCLUDE**: Buses (City Bus, Lion's City, Citaro, etc.) - trucks only
 

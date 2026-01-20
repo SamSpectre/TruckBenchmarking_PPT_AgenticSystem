@@ -336,8 +336,8 @@ Examples:
         "--mode",
         type=str,
         choices=["intelligent", "perplexity", "auto"],
-        default="perplexity",
-        help="Scraping mode: intelligent (multi-page OpenAI), perplexity (single-page), auto"
+        default="intelligent",  # Changed: Use CRAWL4AI multi-page mode by default
+        help="Scraping mode: intelligent (multi-page CRAWL4AI+OpenAI, recommended), perplexity (legacy single-page), auto"
     )
 
     args = parser.parse_args()

@@ -302,7 +302,7 @@ class BenchmarkingState(TypedDict, total=False):
 
 def initialize_state(
     oem_urls: List[str],
-    scraping_mode: ScrapingMode = ScrapingMode.PERPLEXITY
+    scraping_mode: ScrapingMode = ScrapingMode.INTELLIGENT  # Changed: Use CRAWL4AI mode by default
 ) -> BenchmarkingState:
     """Create initial state for new workflow"""
     try:

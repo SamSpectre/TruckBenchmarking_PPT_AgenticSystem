@@ -233,9 +233,8 @@ def create_app():
                     with gr.Column(scale=1):
                         mode_dropdown = gr.Dropdown(
                             choices=[
-                                ("Fast (Single Page)", "perplexity"),
-                                ("Deep (Multi-page)", "intelligent"),
-                                ("Auto", "auto")
+                                ("Multi-page Extraction (Recommended)", "intelligent"),
+                                ("Legacy Single-page (Deprecated)", "perplexity"),
                             ],
                             value="intelligent",
                             label="Extraction Mode"
@@ -272,9 +271,8 @@ def create_app():
 
                 1. **Enter URLs**: Paste OEM electric vehicle specification page URLs
                 2. **Select Mode**:
-                   - **Fast**: Quick single-page extraction
-                   - **Deep**: Crawls multiple pages for complete data
-                   - **Auto**: Automatically selects best approach
+                   - **Multi-page Extraction (Recommended)**: Uses CRAWL4AI + OpenAI to crawl multiple pages and extract comprehensive data
+                   - **Legacy Single-page (Deprecated)**: Uses Perplexity API for single-page extraction (being phased out)
                 3. **Start Extraction**: Click the button and wait for results
                 4. **Download**: Get PowerPoint presentations and export data
 

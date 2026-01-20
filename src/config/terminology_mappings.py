@@ -15,16 +15,29 @@ OEMs covered: MAN, Mercedes-Benz, Volvo, Scania, DAF, IVECO, Renault,
 # BATTERY CAPACITY TERMINOLOGY (kWh)
 # =====================================================================
 BATTERY_CAPACITY_TERMS = {
-    # English
+    # English - Standard terms
     "battery capacity", "battery", "battery pack", "battery packs",
     "energy capacity", "energy content", "energy storage", "kwh",
     "usable capacity", "total capacity", "net capacity", "gross capacity",
     "battery energy", "pack capacity", "cell capacity",
 
-    # German
+    # English - Additional variations
+    "energy storage system", "ess", "traction battery",
+    "traction battery capacity", "accumulator", "accumulator capacity",
+    "battery system", "battery module", "battery modules",
+    "installed capacity", "installed battery capacity",
+    "nominal capacity", "nominal battery capacity",
+    "available energy", "usable energy", "energy reservoir",
+    "power storage", "storage capacity", "onboard energy",
+
+    # German - Standard terms
     "batteriekapazität", "batterie", "akkukapazität", "akku",
     "energieinhalt", "energiespeicher", "batteriepack", "batteriepacks",
     "nutzbare kapazität", "gesamtkapazität", "netto-kapazität",
+
+    # German - Additional variations
+    "traktionsbatterie", "energiespeichersystem",
+    "akkumulator", "speicherkapazität", "installierte kapazität",
 
     # French
     "capacité batterie", "capacité de la batterie", "batterie",
@@ -59,7 +72,7 @@ BATTERY_CAPACITY_TERMS = {
 # MOTOR POWER TERMINOLOGY (kW)
 # =====================================================================
 MOTOR_POWER_TERMS = {
-    # English
+    # English - Standard terms
     "motor power", "power", "drive power", "electric motor",
     "continuous power", "peak power", "max power", "maximum power",
     "rated power", "output power", "motor output", "drive output",
@@ -67,11 +80,22 @@ MOTOR_POWER_TERMS = {
     "powertrain output", "system power", "total power",
     "continuous output", "nominal power", "net power",
 
-    # German
+    # English - E-Axle terminology (integrated motor-axle systems)
+    # Used by Volvo, Scania, ZF, and others for integrated e-drive axles
+    "e-axle power", "eaxle power", "electric axle power",
+    "e-axle output", "eAxle power", "eAxle output", "e-drive power",
+    "axle power", "drive axle power", "integrated axle power",
+    "rear axle power", "electric drive axle power",
+
+    # German - Standard terms
     "motorleistung", "leistung", "antriebsleistung", "elektromotor",
     "dauerleistung", "spitzenleistung", "maximalleistung", "nennleistung",
     "antriebsausgabe", "e-antrieb", "elektrischer antrieb",
     "systemleistung", "gesamtleistung",
+
+    # German - E-Axle terms
+    "e-achse leistung", "elektroachse leistung",
+    "antriebsachse leistung", "elektrische achse leistung",
 
     # French
     "puissance moteur", "puissance", "puissance de traction",
@@ -105,13 +129,25 @@ MOTOR_POWER_TERMS = {
 # MOTOR TORQUE TERMINOLOGY (Nm)
 # =====================================================================
 MOTOR_TORQUE_TERMS = {
-    # English
+    # English - Standard terms
     "torque", "motor torque", "drive torque", "max torque",
     "maximum torque", "peak torque", "wheel torque",
+    "output torque", "rated torque", "nominal torque",
 
-    # German
+    # English - E-Axle terminology (integrated motor-axle systems)
+    # Used by Volvo, Scania, ZF, and others for integrated e-drive axles
+    "e-axle torque", "eaxle torque", "electric axle torque",
+    "e-axle output torque", "eAxle torque", "e-drive torque",
+    "rear axle torque", "drive axle torque", "axle torque",
+    "integrated axle torque", "electric drive axle torque",
+
+    # German - Standard terms
     "drehmoment", "motordrehmoment", "antriebsdrehmoment",
     "maximales drehmoment", "max. drehmoment",
+
+    # German - E-Axle terms
+    "e-achse drehmoment", "elektroachse drehmoment",
+    "antriebsachse drehmoment", "elektrische achse drehmoment",
 
     # French
     "couple", "couple moteur", "couple maximal", "couple de traction",
@@ -176,17 +212,29 @@ RANGE_TERMS = {
 # CHARGING POWER TERMINOLOGY (kW)
 # =====================================================================
 DC_CHARGING_TERMS = {
-    # English
+    # English - Standard terms
     "dc charging", "fast charging", "rapid charging", "quick charging",
     "dc fast charging", "charging power", "charge power", "dc power",
     "ccs", "ccs2", "combo", "combo2", "dc charging power",
     "maximum charging", "max charging", "peak charging",
     "charging capacity", "charger power",
 
-    # German
+    # English - High-power and depot charging variations
+    "hpc", "high power charging", "high-power charging",
+    "ultrafast charging", "ultra-fast charging", "ultra fast",
+    "depot charging", "depot charger", "overnight charging",
+    "opportunity charging", "en-route charging",
+    "combined charging system", "ccs1", "ccs type 2",
+    "dc combo", "combo charging", "fast charge capability",
+
+    # German - Standard terms
     "dc-laden", "schnellladen", "schnellladung", "ladeleistung",
     "dc-ladeleistung", "gleichstromladen", "ccs-laden",
     "maximale ladeleistung", "ladekapazität",
+
+    # German - High-power variations
+    "hochleistungsladen", "hpc-laden", "schnellladesystem",
+    "depotladen", "nachtladen",
 
     # French
     "charge rapide", "charge dc", "puissance de charge",
@@ -268,15 +316,25 @@ CHARGING_TIME_TERMS = {
 # WEIGHT TERMINOLOGY (kg)
 # =====================================================================
 GVW_TERMS = {
-    # English
+    # English - Standard terms (truck ALONE weight, typically 18-28t)
     "gvw", "gross vehicle weight", "gvwr", "gross vehicle weight rating",
     "permissible weight", "maximum weight", "total weight",
     "vehicle weight", "technical weight", "max laden weight",
     "permissible total weight", "ptw",
 
-    # German
+    # English - Additional variations
+    "technically permissible weight", "laden weight",
+    "operating weight", "maximum operating weight",
+    "authorized weight", "maximum authorized weight",
+    "maximum permissible weight", "permissible laden weight",
+
+    # German - Standard terms
     "zulässiges gesamtgewicht", "gesamtgewicht", "technisches gewicht",
     "zgg", "höchstzulässiges gesamtgewicht", "fahrzeuggewicht",
+
+    # German - Additional variations
+    "technisch zulässiges gesamtgewicht", "tzgg",
+    "betriebsgewicht", "zulässige gesamtmasse",
 
     # French
     "ptac", "poids total autorisé en charge", "poids total",
@@ -299,14 +357,23 @@ GVW_TERMS = {
 }
 
 GCW_TERMS = {
-    # English
+    # English - Standard terms (truck + trailer COMBINED, typically 40-44t)
     "gcw", "gross combination weight", "gcwr", "gross combined weight",
     "train weight", "combination weight", "with trailer",
     "maximum train weight", "combined weight", "articulated weight",
 
-    # German
+    # English - Additional variations
+    # NOTE: Values 40-44t for semitrailer trucks are typically GCW, NOT GVW!
+    "tractor-trailer weight", "road train weight", "total train mass",
+    "combination mass", "total combination weight",
+    "maximum combination weight", "gross train weight",
+
+    # German - Standard terms
     "zulässiges zuggesamtgewicht", "zuggesamtgewicht", "zgg",
     "gesamtzuggewicht", "sattelzuggewicht",
+
+    # German - Additional variations
+    "maximales zuggewicht", "zulässige gesamtmasse zug",
 
     # French
     "ptra", "poids total roulant autorisé", "poids en charge",
@@ -435,6 +502,93 @@ OEM_PATTERNS = {
         "configs": ["4x2", "6x4", "day cab", "sleeper"],
     },
 }
+
+# =====================================================================
+# SEMANTIC EQUIVALENCES
+# These terms mean THE SAME THING but are named differently by OEMs
+# =====================================================================
+SEMANTIC_EQUIVALENCES = {
+    # Motor torque equivalences
+    # Different OEMs use different terms for the same measurement
+    "motor_torque_nm": [
+        "motor torque",          # Standard term
+        "e-axle torque",         # Volvo, Scania - integrated motor-axle
+        "eaxle torque",          # Alternative spelling
+        "electric axle torque",  # Full form
+        "drive torque",          # Generic
+        "wheel torque",          # At wheels
+        "output torque",         # Motor output
+        "axle torque",           # Generic axle
+        "drehmoment",            # German
+        "e-achse drehmoment",    # German e-axle
+    ],
+
+    # Motor power equivalences
+    "motor_power_kw": [
+        "motor power",           # Standard term
+        "e-axle power",          # Volvo, Scania - integrated motor-axle
+        "eaxle power",           # Alternative spelling
+        "electric axle power",   # Full form
+        "drive power",           # Generic
+        "propulsion power",      # Traction
+        "system power",          # Total output
+        "axle power",            # Generic axle
+        "motorleistung",         # German
+        "e-achse leistung",      # German e-axle
+    ],
+
+    # Battery capacity equivalences
+    "battery_capacity_kwh": [
+        "battery capacity",      # Standard term
+        "energy storage",        # ESS terminology
+        "traction battery",      # Industrial term
+        "accumulator",           # Technical term
+        "battery pack",          # Pack level
+        "batteriekapazität",     # German
+        "energiespeicher",       # German ESS
+    ],
+
+    # Charging power equivalences
+    "dc_charging_kw": [
+        "dc charging",           # Standard term
+        "fast charging",         # Common term
+        "ccs charging",          # Standard type
+        "hpc",                   # High power charging
+        "depot charging",        # Fleet term
+        "schnellladen",          # German
+    ],
+}
+
+
+def build_semantic_equivalence_prompt() -> str:
+    """
+    Build a semantic equivalence section for the LLM extraction prompt.
+
+    This teaches the LLM that different terms mean the same thing
+    and should be extracted to the same field.
+    """
+    prompt_parts = []
+
+    prompt_parts.append("""
+**SEMANTIC EQUIVALENCES - These terms mean THE SAME THING:**
+
+Different OEMs use different terminology for identical measurements.
+Extract ALL of these variations into the standard field:
+""")
+
+    for field, equivalents in SEMANTIC_EQUIVALENCES.items():
+        equiv_str = " = ".join(f'"{e}"' for e in equivalents[:5])
+        prompt_parts.append(f"- {equiv_str} → **{field}**")
+
+    prompt_parts.append("""
+**IMPORTANT E-AXLE NOTE:**
+OEMs like Volvo, Scania, and ZF use "e-axle" terminology for integrated motor-axle systems.
+"e-axle torque" IS "motor torque" - extract it into motor_torque_nm!
+"e-axle power" IS "motor power" - extract it into motor_power_kw!
+""")
+
+    return "\n".join(prompt_parts)
+
 
 # =====================================================================
 # HELPER FUNCTION: Check if term matches any in a set

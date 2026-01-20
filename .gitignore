@@ -202,3 +202,4 @@ docker-compose.override.yml
 *.seed
 *.pid.lock
 .node_repl_history
+AGENT.md
